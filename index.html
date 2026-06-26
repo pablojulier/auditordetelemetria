@@ -181,7 +181,7 @@
 <body>
 
     <header>
-        <h1>🚗 Auditor de Telemetria V27.50</h1>
+        <h1>🚗 Auditor de Telemetria V28.1</h1>
         <div style="font-size: 0.75rem; opacity: 0.85;">Mapeamento de excessos de velocidades acima do limite</div>
     </div>
     <button id="btn-sobre" style="
@@ -364,6 +364,7 @@
                 <div id="table-container">
                     <div style="display:flex; justify-content:space-between; align-items:center; padding-bottom:4px; gap:4px;">
                         <h3 style="font-size:0.85rem; text-transform:uppercase; color:#64748b; flex:1;">📋 Infrações e Localidades</h3>
+                        <button class="btn-acao-tabela" onclick="exportarTabelaParaPDF()" style="background:#e11d48; font-size:0.75rem; padding:4px 10px; margin-left: 10px; border-radius:4px; color:white; cursor:pointer; border:none;">📄 Exportar PDF</button>
                         <button id="btn-copiar" class="btn-acao" onclick="copiarDadosTabelaExcelRichText()" disabled style="background:#0284c7; font-size:0.7rem; padding:4px 6px;">📋 Copiar p/ Excel</button>
                         <button id="btn-copiar-img" class="btn-acao" onclick="copiarTabelaComoImagemTotal()" disabled style="background:#10b981; font-size:0.7rem; padding:4px 6px;">🖼️ Copiar Imagem</button>
                     </div>
@@ -1002,31 +1003,95 @@
             labels: rotulosHoraCompleta,
             datasets: [
                 {
-                    label: 'Velocidade do Veículo (km/h)',
+                    label: 'Velocidade Regular (km/h)',
                     data: velocidadesRegistradas,
                     borderWidth: 2.5,
-                    tension: 0.1, // Suavização leve para não distorcer a precisão dos picos
+                    tension: 0, // Usar 0 remove distorções de curvas nas decisões de cores
                     fill: false,
-                    pointRadius: 0, // Remove as bolinhas pretas poluídas
+                    pointRadius: 0,
                     pointHoverRadius: 5,
-                    // Esta função analisa o ponto atual e pinta o segmento de vermelho se houver excesso
+                    backgroundColor: '#22c55e',
+                    borderColor: '#22c55e',
+                    // Cria um gradiente sob medida para CADA segmento de reta do gráfico
                     segment: {
                         borderColor: function(context) {
-                            var index = context.p1DataIndex;
-                            var dadosPonto = historicoLinhaGrafico[index];
-                            if (dadosPonto && dadosPonto.vel > dadosPonto.limite) {
-                                return '#dc2626'; // Vermelho se estiver acima do limite
+                            var idx0 = context.p0DataIndex;
+                            var idx1 = context.p1DataIndex;
+                            
+                            var pontoA = historicoLinhaGrafico[idx0];
+                            var pontoB = historicoLinhaGrafico[idx1];
+
+                            if (!pontoA || !pontoB || pontoA.vel === 0 || pontoB.vel === 0) {
+                                return '#22c55e';
                             }
-                            return '#22c55e'; // Verde se estiver dentro do limite
+
+                            var limiteA = pontoA.limite;
+                            var limiteB = pontoB.limite;
+
+                            var excessoA = pontoA.vel > limiteA;
+                            var excessoB = pontoB.vel > limiteB;
+
+                            // Cenário 1: Ambos os pontos estão abaixo do limite (Tudo OK)
+                            if (!excessoA && !excessoB) {
+                                return '#22c55e';
+                            }
+                            
+                            // Cenário 2: Ambos os pontos estão acima do limite (Tudo em Excesso)
+                            if (excessoA && excessoB) {
+                                return '#dc2626';
+                            }
+
+                            // Cenário 3: Transição (Abaixo -> Acima ou Acima -> Abaixo)
+                            // Criamos um microrgradiente que acompanha a direção exata deste segmento
+                            var chartCtx = context.chart.ctx;
+                            var p0 = context.p0;
+                            var p1 = context.p1;
+                            
+                            var grad = chartCtx.createLinearGradient(p0.x, p0.y, p1.x, p1.y);
+
+                            // Descobre em que ponto percentual (de 0 a 1) a linha cruza o limite aplicado
+                            // Usando interpolação baseada no limite correspondente
+                            var limiteMedio = (limiteA + limiteB) / 2;
+                            var deltaTotal = pontoB.vel - pontoA.vel;
+                            
+                            if (deltaTotal === 0) return excessoB ? '#dc2626' : '#22c55e';
+                            
+                            var pctCruzamento = (limiteMedio - pontoA.vel) / deltaTotal;
+                            var safePct = Math.max(0, Math.min(1, pctCruzamento));
+
+                            if (excessoA) {
+                                // Começou acima (Vermelho) e terminou abaixo (Verde)
+                                grad.addColorStop(0, '#dc2626');
+                                grad.addColorStop(safePct, '#dc2626');
+                                grad.addColorStop(safePct, '#22c55e');
+                                grad.addColorStop(1, '#22c55e');
+                            } else {
+                                // Começou abaixo (Verde) e terminou acima (Vermelho)
+                                grad.addColorStop(0, '#22c55e');
+                                grad.addColorStop(safePct, '#22c55e');
+                                grad.addColorStop(safePct, '#dc2626');
+                                grad.addColorStop(1, '#dc2626');
+                            }
+
+                            return grad;
                         }
                     }
                 },
                 {
+                    label: 'Excesso de Velocidade',
+                    data: [], 
+                    backgroundColor: '#dc2626',
+                    borderColor: '#dc2626',
+                    borderWidth: 2.5,
+                    fill: false
+                },
+                {
                     label: 'Limite Aplicado',
                     data: limitesFixados,
-                    borderColor: '#f59e0b', // Amarelo/Laranja para o limite
+                    borderColor: '#f59e0b',
+                    backgroundColor: '#f59e0b',
                     borderWidth: 2,
-                    borderDash: [5, 5], // Linha tracejada estilizada
+                    borderDash: [5, 5],
                     fill: false,
                     pointRadius: 0
                 }
@@ -1038,7 +1103,10 @@
             plugins: {
                 legend: {
                     position: 'top',
-                    labels: { boxWidth: 12, font: { size: 11 } }
+                    labels: { 
+                        boxWidth: 12, 
+                        font: { size: 11 } 
+                    }
                 }
             },
             scales: {
@@ -1054,7 +1122,6 @@
         }
     });
 }
-
         function atualizarTabelaDOM() {
             var tbody = document.getElementById('tbody-dados');
             tbody.innerHTML = "";
@@ -1411,6 +1478,138 @@
         pdf.text("Relatório de Telemetria - Gráfico de Velocidade", 10, 15);
         pdf.addImage(imgData, 'PNG', 10, 25, 277, 150);
         pdf.save('grafico-velocidades.pdf');
+    });
+}
+function exportarTabelaParaPDF() {
+    // 1. Localiza a tabela original
+    var tabelaOriginal = document.querySelector('#table-container table') || document.getElementById('table-container');
+    if (!tabelaOriginal) {
+        alert("Tabela não encontrada para exportação.");
+        return;
+    }
+
+    // 2. Cria um clone temporário para manipulação visual oculta
+    var cloneContainer = document.createElement('div');
+    cloneContainer.style.position = 'absolute';
+    cloneContainer.style.left = '-9999px';
+    cloneContainer.style.top = '0';
+    cloneContainer.style.width = tabelaOriginal.offsetWidth + 'px';
+    cloneContainer.style.height = 'auto';
+    cloneContainer.style.overflow = 'visible';
+    
+    var tabelaClonada = tabelaOriginal.cloneNode(true);
+    
+    // --- OTIMIZAÇÃO 1: REMOVER COLUNAS "FOCO" E "AÇÃO" ---
+    // Procura por textos de cabeçalho que contenham "foco", "ação" ou "acao" e remove a coluna inteira
+    var indicesParaRemover = [];
+    var ths = tabelaClonada.querySelectorAll('th');
+    ths.forEach((th, index) => {
+        var texto = th.innerText.toLowerCase();
+        if (texto.includes('foco') || texto.includes('ação') || texto.includes('acao')) {
+            indicesParaRemover.push(index);
+        }
+    });
+
+    // Remove as células correspondentes de cada linha (cabeçalho e corpo)
+    var linhasClonadas = tabelaClonada.querySelectorAll('tr');
+    linhasClonadas.forEach(linha => {
+        // Remove de trás para frente para não quebrar a ordem dos índices restantes
+        for (var i = indicesParaRemover.length - 1; i >= 0; i--) {
+            var celula = linha.children[indicesParaRemover[i]];
+            if (celula) celula.remove();
+        }
+    });
+
+    // --- OTIMIZAÇÃO 2: COMPACTAR TEXTO E ESPAÇOS (CABER 3X MAIS LINHAS) ---
+    tabelaClonada.style.fontSize = '5px'; // Diminui o tamanho da fonte significativamente
+    tabelaClonada.style.lineHeight = '1.1';
+    tabelaClonada.style.width = '100%';
+    
+    // Força todas as células (th e td) a terem um preenchimento mínimo
+    var todasCelulas = tabelaClonada.querySelectorAll('th, td');
+    todasCelulas.forEach(cel => {
+        cel.style.padding = '2px 3px !important'; // Reduz o espaço em branco interno drasticamente
+        cel.style.height = 'auto';
+    });
+
+    cloneContainer.appendChild(tabelaClonada);
+    document.body.appendChild(cloneContainer);
+
+    // 3. Renderiza o clone tratado e compactado
+    html2canvas(cloneContainer, { 
+        scale: 2, // Mantém ótima qualidade de leitura mesmo com a fonte pequena
+        backgroundColor: '#ffffff',
+        useCORS: true 
+    }).then(canvas => {
+        // Limpa o clone da tela
+        document.body.removeChild(cloneContainer);
+
+        var { jsPDF } = window.jspdf;
+        if (!jsPDF) {
+            alert("Erro: A biblioteca jsPDF não está carregada.");
+            return;
+        }
+
+        var pdf = new jsPDF('l', 'mm', 'a4');
+        
+        // Configurações de layout da página
+        var larguraPdf = 297;
+        var alturaPdf = 210;
+        var margemX = 10;
+        var margemY = 16; 
+        
+        var larguraUtil = larguraPdf - (margemX * 2); // 277mm
+        var alturaUtil = alturaPdf - 28; // Aproveita ao máximo a altura da folha
+
+        var alturaTotalImagem = (canvas.height * larguraUtil) / canvas.width;
+        
+        var posicaoYInical = margemY;
+        var alturaRestante = alturaTotalImagem;
+        var paginaAtual = 1;
+
+        // Cabeçalho simplificado para economizar espaço inicial
+        pdf.setFont("Helvetica", "bold");
+        pdf.setFontSize(12);
+        pdf.text("Relatório de Telemetria - Tabela de Excessos Ocorridos", margemX, 10);
+        
+        pdf.setFontSize(8);
+        pdf.setFont("Helvetica", "normal");
+        pdf.text("Página " + paginaAtual, larguraPdf - 25, alturaPdf - 8);
+
+        var canvasTemporario = document.createElement('canvas');
+        canvasTemporario.width = canvas.width;
+        
+        // Loop de quebra de páginas
+        while (alturaRestante > 0) {
+            var proporcaoCorte = Math.min(alturaRestante, alturaUtil);
+            var pixelCorteHeight = (proporcaoCorte * canvas.width) / larguraUtil;
+            
+            canvasTemporario.height = pixelCorteHeight;
+            var ctxTemp = canvasTemporario.getContext('2d');
+            
+            var pixelYOrigem = ((alturaTotalImagem - alturaRestante) * canvas.width) / larguraUtil;
+            ctxTemp.drawImage(canvas, 0, pixelYOrigem, canvas.width, pixelCorteHeight, 0, 0, canvas.width, pixelCorteHeight);
+            
+            var imgFatiadaData = canvasTemporario.toDataURL('image/png');
+            
+            pdf.addImage(imgFatiadaData, 'PNG', margemX, posicaoYInical, larguraUtil, proporcaoCorte);
+            
+            alturaRestante -= proporcaoCorte;
+            posicaoYInical = 10; // Próximas páginas começam coladas no topo para renderizar o máximo de dados
+
+            if (alturaRestante > 0) {
+                pdf.addPage();
+                paginaAtual++;
+                
+                pdf.setFont("Helvetica", "normal");
+                pdf.setFontSize(7);
+                pdf.text("Página " + paginaAtual, larguraPdf - 25, alturaPdf - 8);
+            }
+        }
+        
+        pdf.save('tabela-compacta-excessos.pdf');
+    }).catch(err => {
+        console.error("Erro ao gerar PDF:", err);
     });
 }
     </script>
