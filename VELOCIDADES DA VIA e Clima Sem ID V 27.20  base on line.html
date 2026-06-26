@@ -1,0 +1,1357 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>Auditor de Telemetria V26.6 - Mapeamento de Excesso de Velocidade</title>
+    <meta name="description" content="Ferramenta online para identificar excessos de velocidade acima do limite da via em rodovias e excessos na chuva. Importe sua planilha XLSX com latitude, longitude e velocidade.">
+    <meta name="keywords" content="telemetria, auditor de telemetria, excesso de velocidade, excessos na chuva, clima na viagem, planilha de rastreador, geojson rodovias, mapeamento de vias">
+    <meta name="author" content="Pablo Julier">
+    
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+
+    <style>
+        :root {
+            --primary: #0f172a;
+            --primary-light: #1e293b;
+            --bg-main: #f1f5f9;
+            --border: #cbd5e1;
+            --text: #334155;
+            --success: #10b981;
+            
+            --vel-normal: #22c55e;
+            --excesso-baixo: #f97316;
+            --excesso-medio: #ef4444;
+            --excesso-alto: #7f1d1d;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', system-ui, sans-serif; }
+        body { background-color: var(--bg-main); color: var(--text); display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+        
+        header { background-color: var(--primary); color: white; padding: 12px 20px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 2px 5px rgba(0,0,0,0.2); z-index: 10; }
+        header h1 { font-size: 1.1rem; }
+
+        .dashboard { display: flex; flex: 1; overflow: hidden; }
+        
+        /* PAINEL LATERAL */
+        #sidebar { width: 395px; background: white; border-right: 1px solid var(--border); display: flex; flex-direction: column; overflow-y: auto; padding: 15px; gap: 12px; transition: all 0.3s ease; }
+        .section-title { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.5px; color: #64748b; font-weight: bold; border-bottom: 2px solid var(--bg-main); padding-bottom: 4px; margin-bottom: 4px; }
+        
+        .upload-zone { border: 2px dashed var(--border); border-radius: 8px; padding: 12px 10px; text-align: center; cursor: pointer; background: #fafafa; transition: all 0.2s; font-size: 0.8rem; }
+        .upload-zone:hover { border-color: #3b82f6; background: #f0f7ff; }
+        
+        /* Sinalizadores Regionais */
+        .region-panel { display: grid; grid-template-columns: repeat(5, 1fr); gap: 3px; margin-top: 5px; }
+        .region-badge { font-size: 0.62rem; padding: 4px 2px; border-radius: 4px; text-align: center; background: #e2e8f0; color: #64748b; font-weight: bold; border: 1px solid var(--border); transition: all 0.3s; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .region-badge.active { background: #dcfce7; color: #15803d; border-color: #bbf7d0; }
+
+        .status-badge { font-size: 0.78rem; font-weight: bold; padding: 5px 10px; border-radius: 6px; background: var(--bg-main); margin-top: 4px; display: inline-block; width: 100%; text-align: center; }
+        .progress-container { width: 100%; background-color: #e2e8f0; border-radius: 4px; display: none; margin-top: 8px; overflow: hidden; }
+        .progress-bar { width: 0%; height: 10px; background-color: var(--success); transition: width 0.1s ease; }
+
+        /* PAINEL DE FILTROS */
+        .control-panel { background: #f8fafc; padding: 10px; border-radius: 6px; border: 1px solid var(--border); font-size: 0.8rem; display: flex; flex-direction: column; gap: 8px; }
+        .toggle-row { display: flex; justify-content: space-between; align-items: center; font-weight: bold; }
+        .config-row { display: flex; justify-content: space-between; align-items: center; }
+        .config-row input, .config-row select { padding: 4px; border: 1px solid var(--border); border-radius: 4px; text-align: center; background: white; color: var(--text); }
+        .config-row input { width: 65px; }
+        .config-row select { width: 180px; font-size: 0.75rem; }
+        
+        .help-icon { background: #cbd5e1; border-radius: 50%; width: 15px; height: 15px; display: inline-flex; align-items: center; justify-content: center; font-size: 9px; cursor: pointer; margin-left: 4px; font-weight: bold; color: #0f172a; transition: background 0.2s; }
+        .help-icon:hover { background: #94a3b8; }
+
+        .btn-recalcular { background: #0f172a; color: white; border: none; padding: 8px; border-radius: 5px; font-weight: bold; cursor: pointer; width: 100%; font-size: 0.8rem; margin-top: 4px; transition: background 0.2s; }
+        .btn-recalcular:hover { background: #334155; }
+
+        /* NAVEGADORES SEQUENCIAIS */
+        .nav-box { background: #f1f5f9; padding: 8px; border-radius: 6px; margin-top: 2px; border: 1px solid var(--border); }
+        .nav-row { display: flex; gap: 6px; align-items: center; justify-content: space-between; margin-top: 4px; }
+        .btn-acao { background: #2563eb; color: white; border: none; padding: 5px 10px; border-radius: 4px; font-weight: bold; cursor: pointer; font-size: 0.72rem; }
+        .btn-acao:hover { background: #1d4ed8; }
+        .btn-acao:disabled { background: #cbd5e1; cursor: not-allowed; }
+        .btn-critico { background: #dc2626; }
+        .btn-critico:hover { background: #b91c1c; }
+
+        .metrics-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+        .metric-card { padding: 8px; border-radius: 6px; border: 1px solid var(--border); text-align: center; font-size: 0.7rem; font-weight: bold; }
+        .metric-card span { display: block; font-size: 1.1rem; margin-top: 2px; }
+
+        /* ÁREA DIREITA */
+        .main-content { flex: 1; display: flex; flex-direction: column; height: 100%; position: relative; }
+        #map-container { flex: 5.5; width: 100%; position: relative; transition: flex 0.3s ease; }
+        #map { width: 100%; height: 100%; }
+        
+        /* DIVISÃO INFERIOR COM SUPORTE À EXPANSÃO */
+        #bottom-panel { flex: 4.5; background: white; border-top: 4px solid var(--border); display: flex; overflow: hidden; position: relative; transition: flex 0.3s ease; }
+        
+        .painel-expandido #map-container { flex: 0; height: 0; display: none; }
+        .painel-expandido #bottom-panel { flex: 10; }
+
+        /* Botão Flutuante de Expansão */
+        .btn-expandir-visao { position: absolute; top: 6px; left: 50%; transform: translateX(-50%); z-index: 1000; background: #0f172a; color: white; border: none; padding: 4px 12px; font-size: 0.7rem; font-weight: bold; border-radius: 20px; cursor: pointer; box-shadow: 0 2px 6px rgba(0,0,0,0.2); transition: all 0.2s; }
+        .btn-expandir-visao:hover { background: #2563eb; }
+
+        /* Grafico e Header Estatistico */
+        #chart-container { flex: 1.3; padding: 25px 12px 12px 12px; border-right: 1px solid var(--border); position: relative; min-width: 450px; display: flex; flex-direction: column; gap: 6px; }
+        .chart-header-stats { display: flex; gap: 10px; justify-content: space-between; background: #f8fafc; border: 1px solid var(--border); padding: 6px 12px; border-radius: 4px; }
+        .stat-box-mini { font-size: 0.72rem; font-weight: bold; color: #475569; }
+        .stat-box-mini span { color: #dc2626; font-size: 0.85rem; font-weight: 900; margin-left: 4px; }
+        .chart-wrapper { flex: 1; position: relative; width: 100%; height: 100%; }
+
+        #table-container { flex: 1.2; padding: 25px 12px 12px 12px; display: flex; flex-direction: column; overflow: hidden; }
+
+        /* TABELA DE AUDITORIA */
+        .table-scroll { overflow-y: auto; flex: 1; border: 1px solid var(--border); border-radius: 4px; margin-top: 5px; background: white; }
+        table { width: 100%; border-collapse: collapse; text-align: left; font-size: 0.75rem; }
+        th { background: #f8fafc; color: #64748b; font-weight: bold; padding: 8px; position: sticky; top: 0; border-bottom: 2px solid var(--border); z-index: 5; }
+        td { padding: 7px 8px; border-bottom: 1px solid #e2e8f0; white-space: nowrap; max-width: 150px; overflow: hidden; text-overflow: ellipsis; }
+        tr:hover { background: #f8fafc; }
+        
+        .modo-captura-total { overflow: visible !important; max-height: none !important; height: auto !important; }
+        .modo-captura-total table { width: 100% !important; }
+        .modo-captura-total td, .modo-captura-total th { white-space: normal !important; overflow: visible !important; text-overflow: unset !important; }
+
+        /* TOAST ALERT */
+        #toast-alert { position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%); background: #10b981; color: white; padding: 10px 25px; border-radius: 20px; font-weight: bold; font-size: 0.9rem; z-index: 10000; box-shadow: 0 4px 12px rgba(0,0,0,0.15); display: none; }
+        
+        /* MODAL DE AJUDA */
+        #help-modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.4); z-index: 20000; justify-content: center; align-items: center; }
+        .help-box { background: white; padding: 20px; border-radius: 8px; max-width: 440px; width: 90%; box-shadow: 0 4px 20px rgba(0,0,0,0.25); }
+
+        .map-legend { position: absolute; bottom: 15px; left: 15px; background: rgba(255, 255, 255, 0.9); padding: 8px; border-radius: 6px; box-shadow: 0 2px 8px rgba(0,0,0,0.15); z-index: 1000; font-size: 0.72rem; display: flex; flex-direction: column; gap: 4px; font-weight: bold; color: var(--text); }
+        .legend-item { display: flex; align-items: center; gap: 6px; }
+        .legend-color { width: 12px; height: 12px; border-radius: 50%; border: 1px solid #444; }
+        
+        /* Legenda dinâmica do clima */
+        #weather-legend { display: none; margin-top: 5px; padding-top: 5px; border-top: 1px solid #cbd5e1; }
+        #weather-legend-items { display: flex; flex-direction: column; gap: 4px; margin-top: 3px; }
+        
+        #console-log { background: #1e293b; color: #38bdf8; padding: 5px; font-family: monospace; font-size: 0.65rem; max-height: 65px; overflow-y: auto; border-radius: 4px; }
+        .gmaps-link { display: inline-block; margin-top: 6px; background: #4285F4; color: white !important; text-decoration: none; padding: 4px 8px; border-radius: 4px; font-weight: bold; text-align: center; font-size: 0.72rem; width: 100%; }
+        
+        /* ESTILO DO BOTÃO CLIMA */
+        .col-clima { display: none; text-align: center; }
+        .exibir-clima .col-clima { display: table-cell; }
+
+        /* Estilização para o ícone customizado com clima acoplado no mapa */
+        .custom-marker-wrapper {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+            width: auto !important;
+            height: auto !important;
+        }
+        .custom-marker-dot {
+            width: 14px;
+            height: 14px;
+            border-radius: 50%;
+            border: 1px solid #0f172a;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+        }
+        .custom-marker-weather {
+            font-size: 14px;
+            margin-left: 2px;
+            text-shadow: 0px 0px 3px #fff, 0px 0px 5px #fff;
+            pointer-events: none;
+            white-space: nowrap;
+        }
+    </style>
+</head>
+<body>
+
+    <header>
+        <h1>🚗 Auditor de Telemetria V27.20</h1>
+        <div style="font-size: 0.75rem; opacity: 0.85;">Mapeamento de excessos de velocidades acima do limite</div>
+    </div>
+    <button id="btn-sobre" style="
+        background-color: #facc15; 
+        color: #000000; 
+        border: none; 
+        padding: 8px 16px; 
+        font-weight: bold; 
+        border-radius: 6px; 
+        cursor: pointer; 
+        transition: background 0.2s;
+        font-size: 0.9rem;"
+        onmouseover="this.style.backgroundColor='#eab308'"
+        onmouseout="this.style.backgroundColor='#facc15'">
+        Sobre
+    </button> 
+    </div>
+    <script>
+    document.getElementById('btn-sobre').addEventListener('click', function() {
+        alert("Esta página tem como propósito ajudar identificar excessos de velocidades acima do limite das vias, nas principais rodovias. Basta importar a planilha CSV ou XLSX na Area de Drop 2, com as informações de lat; long; Data e hora; velocidade; cidade ou localização.\n\nDúvidas e sugestões: pablojulier@gmail.com");
+    });
+</script>
+    </header>
+
+    <div class="dashboard" id="painel-principal">
+        
+        <div id="sidebar">
+            <div>
+                <div class="section-title">1. Base de Vias (GeoJSON)</div>
+                <div id="drop-json" class="upload-zone">
+                    <strong>BASE GEOJSON (GitHub / Manual)</strong>
+                    <input type="file" id="input-json" accept=".json, .geojson" multiple style="display:none;">
+                </div>
+                
+                <div id="status-json" class="status-badge" style="color: #2563eb;">
+                    ⏳ Conectando ao repositório GitHub...
+                </div>
+                            
+            </div>
+
+            <div>
+                <div class="section-title">2. Planilha de Leitura (XLSX)</div>
+                <div id="drop-xlsx" class="upload-zone">
+                    <strong id="label-xlsx">Planilha de posições (.xlsx)</strong>
+                    <input type="file" id="input-xlsx" accept=".xlsx, .xls" style="display:none;">
+                </div>
+                <div id="status-xlsx" class="status-badge" style="color: #eab308;">Aguardando telemetria...</div>
+                <div class="progress-container" id="progresso-bloco">
+                    <div class="progress-bar" id="progresso-barra"></div>
+                </div>
+            </div>
+
+            <div>
+                <div class="section-title">3. Filtros & Regras de Velocidade</div>
+                <div class="control-panel">
+                    <div class="config-row" style="background: #eff6ff; padding: 6px; border-radius: 4px; border: 1px dashed #bfdbfe; margin-bottom: 4px;">
+                        <label style="font-weight: bold; color: #1e40af;">🎯 Modo de Regra:</label>
+                        <select id="cfg-modo-regra">
+                            <option value="via" selected>Apenas Limite da Via</option>
+                            <option value="cootravale">Apenas Limite Definido</option>
+                            <option value="ambos">Ambos (Via + Definido)</option>
+                        </select>
+                    </div>
+
+                    <div class="config-row">
+                        <label style="color: #1e40af; font-weight: bold;">🚛 Limite Definido:</label>
+                        <span><input type="number" id="cfg-vel-cootravale" value="88"> km/h</span>
+                    </div>
+
+                    <hr style="border:none; border-top:1px solid var(--border);">
+
+                    <div class="toggle-row" style="color: #4338ca; background: #e0e7ff; padding: 6px; border-radius: 4px; border: 1px solid #c7d2fe; margin-bottom: 4px;">
+                        <label style="cursor:pointer; font-weight: bold;" for="chk-ctb-caminhao">🚚 Limite CTB Caminhão (>90 km/h)</label>
+                        <input type="checkbox" id="chk-ctb-caminhao" style="transform: scale(1.2);" checked>
+                    </div>
+
+                    <div class="toggle-row" style="color: #6b21a8; background: #f3e8ff; padding: 6px; border-radius: 4px; border: 1px solid #e9d5ff; margin-bottom: 4px;">
+                        <label style="cursor:pointer; font-weight: bold;" for="chk-operacao-mbf">🛡️ Operação até (>80 km/h)</label>
+                        <input type="checkbox" id="chk-operacao-mbf" style="transform: scale(1.2);">
+                    </div>
+
+                    <div class="toggle-row">
+                        <label style="cursor:pointer;" for="chk-normais">🟢 Exibir Velocidades Regulares</label>
+                        <input type="checkbox" id="chk-normais" checked style="transform: scale(1.1);">
+                    </div>
+                    <div class="toggle-row" style="color: #b91c1c;">
+                        <label style="cursor:pointer;" for="chk-ignorar-sem-nome">🛡️ Ignorar "Via Mapeada Sem Nome"</label>
+                        <input type="checkbox" id="chk-ignorar-sem-nome" checked style="transform: scale(1.1);">
+                    </div>
+                    <div class="toggle-row" style="color: #65a30d;">
+                        <label style="cursor:pointer;" for="chk-ignorar-fora-malha">❌ Ignorar "Via Fora da Malha"</label>
+                        <input type="checkbox" id="chk-ignorar-fora-malha" checked style="transform: scale(1.1);">
+                    </div>
+                    <div class="toggle-row" style="color: #0284c7;">
+                        <label style="cursor:pointer;" for="chk-ignorar-tolerancia">📏 Ignorar Margem de Tolerância </label>
+                        <input type="checkbox" id="chk-ignorar-tolerancia" style="transform: scale(1.1);">
+                    </div>
+                    <div class="toggle-row" style="color: #2563eb; background: #f0fdf4; padding: 4px; border-radius: 4px; border: 1px solid #bbf7d0; margin-top: 2px;">
+                        <label style="cursor:pointer; font-weight: bold;" for="chk-ativar-clima">🌤️ Obter Clima Ocorrências (API)</label>
+                        <input type="checkbox" id="chk-ativar-clima" style="transform: scale(1.1);" onchange="alternarModuloClimaOcorrencias()">
+                    </div>
+                    
+                    <div class="config-row">
+                        <label>Margem de Tolerância: <span class="help-icon" onclick="abrirAjuda('tolerancia')">?</span></label>
+                        <span><input type="number" id="cfg-tolerancia-vel" value="7"> km/h</span>
+                    </div>
+                    <div class="config-row">
+                        <label>Raio de Busca Radial: <span class="help-icon" onclick="abrirAjuda('raio')">?</span></label>
+                        <span><input type="number" id="cfg-raio" value="25"> m</span>
+                    </div>
+                    <div class="config-row">
+                        <label>Tolerância de Ângulo: <span class="help-icon" onclick="abrirAjuda('angulo')">?</span></label>
+                        <span><input type="number" id="cfg-angulo" value="40"> °</span>
+                    </div>
+                    
+                    <button class="btn-recalcular" onclick="executarCruzamentoAssincrono()">⚡ Recalcular Análise</button>
+                </div>
+            </div>
+
+            <div>
+                <div class="section-title">4. Painel de Auditoria Sequencial</div>
+                <div class="metrics-grid">
+                    <div class="metric-card" style="background:#f8fafc;">TOTAL PONTOS<span id="m-total-pontos">0</span></div>
+                    <div class="metric-card" style="background:#fff5f5; color:#c53030;">EXCESSOS VALIDADOS<span id="m-total-excessos">0</span></div>
+                </div>
+                
+                <div class="nav-box">
+                    <div style="font-size:0.7rem; font-weight:bold; color:#64748b;">Navegação Geral de Excessos:</div>
+                    <div class="nav-row">
+                        <button id="btn-ant" class="btn-acao" onclick="pularGeral(-1)" disabled>◀ Anterior</button>
+                        <span id="nav-contador" style="font-size:0.72rem; font-weight:bold;">0 / 0</span>
+                        <button id="btn-prox" class="btn-acao" onclick="pularGeral(1)" disabled>Próximo ▶</button>
+                    </div>
+                </div>
+
+                <div class="nav-box" style="border-color:#fca5a5; background:#fff5f5;">
+                    <div style="font-size:0.7rem; font-weight:bold; color:#991b1b;">🚨 Apenas Casos Críticos (≥ 50% Acima):</div>
+                    <div class="nav-row">
+                        <button id="btn-crit-ant" class="btn-acao btn-critico" onclick="pularCritico(-1)" disabled>◀ Crítico</button>
+                        <span id="nav-crit-contador" style="font-size:0.72rem; font-weight:bold; color:#991b1b;">0 / 0</span>
+                        <button id="btn-crit-prox" class="btn-acao btn-critico" onclick="pularCritico(1)" disabled>Crítico ▶</button>
+                    </div>
+                </div>
+            </div>
+
+            <div id="console-log">Pronto para operação.</div>
+        </div>
+
+        <div class="main-content">
+            <div id="map-container">
+                <div id="map"></div>
+                <div class="map-legend">
+                    <div class="legend-item"><span class="legend-color" style="background:var(--vel-normal);"></span> Regularidade</div>
+                    <div class="legend-item"><span class="legend-color" style="background:var(--excesso-baixo);"></span> Excesso > 10%</div>
+                    <div class="legend-item"><span class="legend-color" style="background:var(--excesso-medio);"></span> Excesso > 20%</div>
+                    <div class="legend-item"><span class="legend-color" style="background:var(--excesso-alto);"></span> Crítico ≥ 50%</div>
+                    
+                    <div id="weather-legend">
+                        <div style="margin-bottom: 2px; text-decoration: underline;">Condições na Rota:</div>
+                        <div id="weather-legend-items"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="bottom-panel">
+                <button class="btn-expandir-visao" onclick="alternarExpansaoPainelGraficos()">🔍 Expandir Painel (Tabela/Gráfico)</button>
+
+                <div id="chart-container">
+                    <div class="chart-header-stats">
+                        <div class="stat-box-mini">🎯 TOTAL PICOS EXCEDIDOS:<span id="stat-total-picos">0</span></div>
+                        <div class="stat-box-mini">⚡ MAIOR VELOCIDADE REGISTRADA:<span id="stat-max-velocidade">0 km/h</span></div>
+                    </div>
+                    <div class="chart-wrapper">
+                        <canvas id="chartExcessosFaixas"></canvas>
+                    </div>
+                </div>
+                
+                <div id="table-container">
+                    <div style="display:flex; justify-content:space-between; align-items:center; padding-bottom:4px; gap:4px;">
+                        <h3 style="font-size:0.85rem; text-transform:uppercase; color:#64748b; flex:1;">📋 Infrações e Localidades</h3>
+                        <button id="btn-copiar" class="btn-acao" onclick="copiarDadosTabelaExcelRichText()" disabled style="background:#0284c7; font-size:0.7rem; padding:4px 6px;">📋 Copiar p/ Excel</button>
+                        <button id="btn-copiar-img" class="btn-acao" onclick="copiarTabelaComoImagemTotal()" disabled style="background:#10b981; font-size:0.7rem; padding:4px 6px;">🖼️ Copiar Imagem</button>
+                    </div>
+                    
+                    <div class="table-scroll" id="div-captura-tabela">
+                        <table id="tabela-infracoes">
+                            <thead>
+                                <tr>
+                                    <th>Cidade</th>
+                                    <th>Via</th>
+                                    <th>Data e Hora</th>
+                                    <th>Vel. da Via</th>
+                                    <th>Vel. Registrada (+%)</th>
+                                    <th class="col-clima">Clima</th>
+                                    <th style="text-align:center;" class="col-foco-ignore">Foco</th>
+                                    <th style="text-align:center;" class="col-foco-ignore">Ação</th>
+                                </tr>
+                            </thead>
+                            <tbody id="tbody-dados">
+                                <tr>
+                                    <td colspan="8" style="text-align:center; color:#94a3b8; padding:30px;">Aguardando processamento de dados...</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <div id="toast-alert">Copiado com sucesso!</div>
+
+    <div id="help-modal" onclick="fecharAjuda()">
+        <div class="help-box" onclick="event.stopPropagation()">
+            <h3 id="help-title" style="margin-bottom:8px; font-size:1rem; color:var(--primary);"></h3>
+            <p id="help-text" style="font-size:0.82rem; line-height:1.5; color:var(--text); white-space:pre-line; margin-bottom:12px;"></p>
+            <p style="font-size:0.82rem; line-height:1.5; color:var(--text); white-space:pre-line; margin-bottom:12px;"></p>
+            <button class="btn-recalcular" onclick="fecharAjuda()">Entendi</button>
+        </div>
+    </div>
+
+    <script>
+        async function carregarViasAutomaticamente() {
+            var margemErroGraus = 0.0009;
+            var statusBadge = document.getElementById('status-json');
+            printLog("Iniciando importação automática das vias do GitHub...");
+
+            const urlsGeoJSON = [
+              "https://raw.githubusercontent.com/pablojulier/dadosGeojsonbr/main/C.Oeste_parte_1.geojson",
+              "https://raw.githubusercontent.com/pablojulier/dadosGeojsonbr/main/Nordeste_parte_1.geojson",
+              "https://raw.githubusercontent.com/pablojulier/dadosGeojsonbr/main/Nordeste_parte_2.geojson",
+              "https://raw.githubusercontent.com/pablojulier/dadosGeojsonbr/main/Norte.geojson",
+              "https://raw.githubusercontent.com/pablojulier/dadosGeojsonbr/main/Sudeste_parte_1.geojson",
+              "https://raw.githubusercontent.com/pablojulier/dadosGeojsonbr/main/Sudeste_parte_2.geojson",
+              "https://raw.githubusercontent.com/pablojulier/dadosGeojsonbr/main/Sudeste_parte_3.geojson",
+              "https://raw.githubusercontent.com/pablojulier/dadosGeojsonbr/main/Sul_parte_1.geojson",
+              "https://raw.githubusercontent.com/pablojulier/dadosGeojsonbr/main/Sul_parte_2.geojson"
+            ];
+
+            for (let i = 0; i < urlsGeoJSON.length; i++) {
+                try {
+                    statusBadge.innerText = `⏳ Baixando malha do GitHub: parte ${i + 1} de ${urlsGeoJSON.length}...`;
+                    
+                    const resposta = await fetch(urlsGeoJSON[i]);
+                    const geojson = await resposta.json();
+
+                    if (geojson && geojson.features) {
+                        geojson.features.forEach(feat => {
+                            if (!feat.geometry) return;
+                            if (feat.geometry.type === "LineString") {
+                                var bbox = turf.bbox(feat);
+                                feat.expandedBbox = [bbox[0] - margemErroGraus, bbox[1] - margemErroGraus, bbox[2] + margemErroGraus, bbox[3] + margemErroGraus];
+                                baseViasSegmentadas.push(feat);
+                            }
+                        });
+                    }
+                } catch (err) {
+                    console.error("Erro ao carregar a URL: " + urlsGeoJSON[i], err);
+                    printLog(`Falha ao conectar na parte ${i + 1} do banco de dados.`, true);
+                }
+            }
+
+            statusBadge.innerText = `✅ ${baseViasSegmentadas.length.toLocaleString('pt-BR')} vias integradas (GitHub)`;
+            statusBadge.style.color = "#16a34a";
+            statusBadge.style.background = "#f0fdf4";
+            statusBadge.style.borderColor = "#bbf7d0";
+            printLog(`Banco de dados pronto para análise. Segmentos em cache: ${baseViasSegmentadas.length}`);
+            
+            if (dadosTelemetriaBrutos.length > 0) executarCruzamentoAssincrono();
+        }
+        var map, camadaExcedentes, camadaNormais, camadaTrajeto, graficoInstancia;
+        var baseViasSegmentadas = []; 
+        var dadosTelemetriaBrutos = [];
+        var listaDeExcessosOcorridos = [];
+        var listaDeExcessosCriticos = []; 
+        var historicoLinhaGrafico = []; 
+        
+        var MAPA_DICIONARIO_CLIMA = {
+            "☀️": "Céu Limpo",
+            "⛅": "Parcial Nublado",
+            "🌫️": "Nevoeiro / Neblina",
+            "🌧️": "Chuva / Pancadas",
+            "🌨️": "Neve / Granizo",
+            "⛈️": "Tempestade / Temporal",
+            "💨": "Vento Forte"
+        };
+
+        var indiceGeralAtual = -1;
+        var indiceCriticoAtual = -1;
+        var colunasMapeadas = { lat: null, lon: null, velocidad: null, dataHora: null, cidade: null };
+
+        window.addEventListener('DOMContentLoaded', function() {
+            var googleVias = L.tileLayer('https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}', { attribution: '© Google Maps' });
+            var googleSatelite = L.tileLayer('https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}', { attribution: '© Google Maps Satélite' });
+
+            map = L.map('map', {
+                center: [-15.7801, -47.9292],
+                zoom: 4,
+                layers: [googleVias]
+            });
+
+            var mapasBase = {
+                "Google Maps (Vias)": googleVias,
+                "Google Satélite": googleSatelite
+            };
+
+            L.control.layers(mapasBase, null, { position: 'topright', collapsed: false }).addTo(map);
+
+            camadaTrajeto = L.layerGroup().addTo(map);
+            camadaNormais = L.layerGroup().addTo(map);
+            camadaExcedentes = L.layerGroup().addTo(map);
+
+            // Mantém a escuta dos botões de drop manuais ativada
+            configurarZonasDeUpload();
+            inicializarGraficoVazio();
+
+            // 🚀 DISPARA O DOWNLOAD DO GITHUB AUTOMATICAMENTE AQUI
+            carregarViasAutomaticamente();
+
+            document.getElementById('chk-normais').addEventListener('change', function(e) {
+                if (e.target.checked) map.addLayer(camadaNormais);
+                else map.removeLayer(camadaNormais);
+            });
+        });
+
+        function alternarExpansaoPainelGraficos() {
+            var principal = document.getElementById('painel-principal');
+            principal.classList.toggle('painel-expandido');
+        }
+
+        function printLog(msg, erro = false) {
+            var c = document.getElementById('console-log');
+            c.style.color = erro ? "#f87171" : "#38bdf8";
+            c.innerHTML = "▶ " + msg;
+        }
+
+        function abrirAjuda(tipo) {
+            var m = document.getElementById('help-modal');
+            var t = document.getElementById('help-title');
+            var txt = document.getElementById('help-text');
+            
+            if (tipo === 'raio') {
+                t.innerText = "🔍 Raio de Busca Radial (Metros)";
+                txt.innerText = "Define a distância circular máxima aceitável para vincular o ponto de GPS a uma estrada do mapa.";
+            } else if (tipo === 'angulo') {
+                t.innerText = "📐 Tolerância de Ângulo (Graus)";
+                txt.innerText = "Valida o alinhamento de sentido entre a trajetória do veículo e o traçado cartográfico.";
+            } else if (tipo === 'tolerancia') {
+                t.innerText = "📏 Margem de Tolerância Aceitável (km/h)";
+                txt.innerText = "Estipula uma margem de segurança idêntica à utilizada pela legislação de trânsito (Padrão: 7 km/h).";
+            }
+            m.style.display = 'flex';
+        }
+
+        function fecharAjuda() { document.getElementById('help-modal').style.display = 'none'; }
+
+        function configurarZonasDeUpload() {
+            var arranjoZonas = [
+                { drop: 'drop-json', input: 'input-json', func: processarMultiplosGeoJsons },
+                { drop: 'drop-xlsx', input: 'input-xlsx', func: lerPlanilhaExcel }
+            ];
+
+            arranjoZonas.forEach(zona => {
+                var dEl = document.getElementById(zona.drop);
+                var iEl = document.getElementById(zona.input);
+                if(dEl && iEl) {
+                    dEl.addEventListener('click', () => iEl.click());
+                    dEl.addEventListener('dragover', (e) => { e.preventDefault(); });
+                    dEl.addEventListener('drop', (e) => {
+                        e.preventDefault();
+                        if (e.dataTransfer.files.length) zona.func(e.dataTransfer.files);
+                    });
+                    iEl.addEventListener('change', (e) => {
+                        if (e.target.files.length) zona.func(e.target.files);
+                    });
+                }
+            });
+        }
+
+    function processarMultiplosGeoJsons(arquivos) {
+            var promessas = [];
+            var margemErroGraus = 0.0009;
+            var statusBadge = document.getElementById('status-json');
+
+            Array.from(arquivos).forEach(arquivo => {
+                var leitor = new FileReader();
+                var p = new Promise((resolve) => {
+                    leitor.onload = function(e) {
+                        try {
+                            var geojson = JSON.parse(e.target.result);
+                            if (geojson && geojson.features) {
+                                geojson.features.forEach(feat => {
+                                    if (!feat.geometry) return;
+                                    if (feat.geometry.type === "LineString") {
+                                        var bbox = turf.bbox(feat);
+                                        feat.expandedBbox = [bbox[0] - margemErroGraus, bbox[1] - margemErroGraus, bbox[2] + margemErroGraus, bbox[3] + margemErroGraus];
+                                        
+                                        // ADICIONA ao array (não limpa o que veio do GitHub)
+                                        baseViasSegmentadas.push(feat);
+                                    }
+                                });
+                            }
+                            resolve();
+                        } catch(err) { resolve(); }
+                    };
+                    leitor.readAsText(arquivo);
+                });
+                promessas.push(p);
+            });
+
+            Promise.all(promessas).then(() => {
+                // Atualiza o crachá informando que agora existem vias manuais injetadas
+                statusBadge.innerText = `✅ ${baseViasSegmentadas.length.toLocaleString('pt-BR')} vias em cache (Injeção Manual)`;
+                statusBadge.style.color = "#b45309"; // Tom bronze/laranja para indicar alteração manual
+                statusBadge.style.background = "#fffbeb";
+                statusBadge.style.borderColor = "#fef3c7";
+                printLog(`Vias manuais injetadas com sucesso. Total de segmentos indexados: ${baseViasSegmentadas.length}`);
+                if (dadosTelemetriaBrutos.length > 0) executarCruzamentoAssincrono();
+            });
+        }
+
+        function lerPlanilhaExcel(arquivos) {
+            var arquivo = arquivos[0];
+            if (!arquivo) return;
+
+            document.getElementById('label-xlsx').innerText = "Arquivo: " + arquivo.name;
+
+            var leitor = new FileReader();
+            leitor.onload = function(e) {
+                try {
+                    var dadosUint = new Uint8Array(e.target.result);
+                    var workbook = XLSX.read(dadosUint, { type: 'array', cellDates: true });
+                    var primeiraAba = workbook.Sheets[workbook.SheetNames[0]];
+                    var linhasJson = XLSX.utils.sheet_to_json(primeiraAba, { defval: "" });
+
+                    mapearColunasExcel(Object.keys(linhasJson[0]));
+                    dadosTelemetriaBrutos = linhasJson;
+                    
+                    document.getElementById('status-xlsx').innerText = `${linhasJson.length} registros`;
+                    executarCruzamentoAssincrono();
+                } catch(err) { printLog("Erro ao processar telemetria.", true); }
+            };
+            leitor.readAsArrayBuffer(arquivo);
+        }
+
+        function mapearColunasExcel(cabecalhos) {
+            colunasMapeadas = { lat: null, lon: null, velocidade: null, dataHora: null, city: null };
+            let melhorMatchCidade = 0;
+
+            cabecalhos.forEach(c => {
+                var cLow = c.toLowerCase().trim();
+                if (cLow.includes('lat')) colunasMapeadas.lat = c;
+                if (cLow.includes('lon') || cLow.includes('lng')) colunasMapeadas.lon = c;
+                if (cLow.includes('vel') || cLow.includes('speed')) colunasMapeadas.velocidade = c;
+                if (cLow.includes('dat') || cLow.includes('hor')) colunasMapeadas.dataHora = c;
+                
+                if (cLow === 'cidade' || cLow === 'municipio' || cLow === 'referencia' || cLow === 'referência') {
+                    colunasMapeadas.cidade = c;
+                    melhorMatchCidade = 4;
+                } else if ((cLow.includes('ref') || cLow.includes('cid') || cLow.includes('mun')) && melhorMatchCidade < 3) {
+                    colunasMapeadas.cidade = c;
+                    melhorMatchCidade = 3;
+                } else if (cLow.includes('loc') && melhorMatchCidade < 2) {
+                    colunasMapeadas.cidade = c;
+                    melhorMatchCidade = 2;
+                }
+            });
+
+            if (!colunasMapeadas.lat) colunasMapeadas.lat = cabecalhos[0];
+            if (!colunasMapeadas.lon) colunasMapeadas.lon = cabecalhos[1];
+            if (!colunasMapeadas.velocidade) colunasMapeadas.velocidade = cabecalhos[2];
+            if (!colunasMapeadas.dataHora) colunasMapeadas.dataHora = cabecalhos[3];
+
+            printLog(`Colunas Carregadas: Lat: ${colunasMapeadas.lat} | Lon: ${colunasMapeadas.lon}`);
+        }
+
+        function executarCruzamentoAssincrono() {
+            if (dadosTelemetriaBrutos.length === 0) return;
+
+            camadaTrajeto.clearLayers();
+            camadaNormais.clearLayers();
+            camadaExcedentes.clearLayers();
+            
+            listaDeExcessosOcorridos = [];
+            listaDeExcessosCriticos = [];
+            historicoLinhaGrafico = [];
+            indiceGeralAtual = -1;
+            indiceCriticoAtual = -1;
+
+            var pBloco = document.getElementById('progresso-bloco');
+            var pBarra = document.getElementById('progresso-barra');
+            pBloco.style.display = "block";
+
+            var raioMaxMetros = parseFloat(document.getElementById('cfg-raio').value) || 25;
+            var ignorarSemNome = document.getElementById('chk-ignorar-sem-nome').checked;
+            var ignorarForaMalha = document.getElementById('chk-ignorar-fora-malha').checked;
+            var modoRegra = document.getElementById('cfg-modo-regra').value;
+            var velCootravaleDefinida = parseFloat(document.getElementById('cfg-vel-cootravale').value) || 88;
+            
+            var ignorarMargemTolerada = document.getElementById('chk-ignorar-tolerancia').checked;
+            var valorMargemTolerada = parseFloat(document.getElementById('cfg-tolerancia-vel').value) || 0;
+            
+            // Ativação da Regra do CTB para Caminhões (>90 km/h) e Operação MBF (>80 km/h)
+            var ctbCaminhaoAtivo = document.getElementById('chk-ctb-caminhao').checked;
+            var mbfAtivo = document.getElementById('chk-operacao-mbf').checked;
+
+            var cLat = colunasMapeadas.lat, cLon = colunasMapeadas.lon;
+            var cVel = colunasMapeadas.velocidade, cTime = colunasMapeadas.dataHora;
+            var cCidade = colunasMapeadas.cidade;
+
+            var totalPontos = dadosTelemetriaBrutos.length;
+            var vetorCoordenadasTrajeto = [];
+            var index = 0;
+            var tamanhoLote = 350;
+
+            var picosDeExcessoEstatistica = 0;
+            var maiorVelocidadeEncontrada = 0;
+
+            function fatiarProcessamento() {
+                var fim = Math.min(index + tamanhoLote, totalPontos);
+                
+                for (; index < fim; index++) {
+                    var linha = dadosTelemetriaBrutos[index];
+                    var lat = parseFloat(linha[cLat]);
+                    var lon = parseFloat(linha[cLon]);
+                    var velReg = parseFloat(linha[cVel]);
+
+                    if (isNaN(lat) || isNaN(lon)) continue;
+                    vetorCoordenadasTrajeto.push([lat, lon]);
+
+                    if (velReg > maiorVelocidadeEncontrada) maiorVelocidadeEncontrada = velReg;
+
+                    var pontoTurf = turf.point([lon, lat]);
+                    var menorCustoScore = Infinity;
+                    var viaIdentificada = null;
+
+                    if (baseViasSegmentadas.length > 0) {
+                        baseViasSegmentadas.forEach(via => {
+                            if (lon < via.expandedBbox[0] || lon > via.expandedBbox[2] || lat < via.expandedBbox[1] || lat > via.expandedBbox[3]) return;
+
+                            var projecao = turf.nearestPointOnLine(via, pontoTurf, { units: 'meters' });
+                            var dist = projecao.properties.dist;
+                            if (dist > raioMaxMetros) return;
+
+                            if (dist < menorCustoScore) {
+                                menorCustoScore = dist;
+                                viaIdentificada = via;
+                            }
+                        });
+                    }
+
+                    var dataHoraFormatada = formatarDataHora(linha[cTime]);
+                    
+                    // Extrai o limite cartográfico original da via (padrão 60 se não houver malha)
+                    var velMaxViaOriginal = viaIdentificada ? extrairVelocidadeNumerica(viaIdentificada.properties.maxspeed) : 60;
+                    if(!velMaxViaOriginal) velMaxViaOriginal = 60;
+
+                    // APLICAÇÃO DAS REGRAS ESPECIAIS (CTB Caminhão e Operação MBF)
+                    var velMaxViaRegulamentada = velMaxViaOriginal;
+                    if (ctbCaminhaoAtivo && velMaxViaOriginal > 90) {
+                        velMaxViaRegulamentada = 90;
+                    }
+                    if (mbfAtivo && velMaxViaRegulamentada > 80) {
+                        velMaxViaRegulamentada = 80;
+                    }
+
+                    var viaFinal = "Via Fora da Malha";
+                    var cidadeGeo = "";
+                    if (viaIdentificada) {
+                        viaFinal = viaIdentificada.properties.name || viaIdentificada.properties.ref || "Via Mapeada Sem Nome";
+                        cidadeGeo = viaIdentificada.properties.is_in || viaIdentificada.properties.municipality || viaIdentificada.properties.county || "";
+                    }
+
+                    var cidadePlanilha = cCidade ? String(linha[cCidade] || "").trim() : "";
+                    var cidadeFinal = cidadePlanilha || cidadeGeo || "Não Identificada";
+
+                    var isForaMalha = (viaFinal === "Via Fora da Malha");
+                    var isSemNome = viaFinal.startsWith("Via Mapeada Sem Nome");
+                    
+                    var decissaoInfracao = false;
+                    var limiteConsiderado = velMaxViaRegulamentada; 
+
+                    var aplicaCootravale = (modoRegra === 'cootravale' || modoRegra === 'ambos');
+                    
+                    if (aplicaCootravale && velReg > velCootravaleDefinida) {
+                        // Se o modo for AMBOS, valida se o excesso da via (com CTB/MBF se ativos) é ainda mais rígido que o da Cootravale
+                        if (modoRegra === 'ambos') {
+                            var ignoraPorMalha = ignorarForaMalha && isForaMalha;
+                            var ignoraPorNome = ignorarSemNome && isSemNome;
+                            
+                            var infracaoPelaVia = false;
+                            if (!ignoraPorMalha && !ignoraPorNome && velReg > velMaxViaRegulamentada) {
+                                var deltaExcessoVia = velReg - velMaxViaRegulamentada;
+                                var forcarIgnorarToleranteVia = ignorarMargemTolerada || (mbfAtivo && velReg > 80);
+
+                                if (forcarIgnorarToleranteVia || deltaExcessoVia > valorMargemTolerada) {
+                                    infracaoPelaVia = true;
+                                }
+                            }
+                            
+                            // Define qual das duas infrações é a mais severa (limite menor considerado)
+                            if (infracaoPelaVia && velMaxViaRegulamentada < velCootravaleDefinida) {
+                                decissaoInfracao = true;
+                                limiteConsiderado = velMaxViaRegulamentada;
+                            } else {
+                                decissaoInfracao = true;
+                                limiteConsiderado = velCootravaleDefinida;
+                            }
+                        } else {
+                            decissaoInfracao = true;
+                            limiteConsiderado = velCootravaleDefinida;
+                        }
+                    } 
+                    else if (modoRegra === 'via' || modoRegra === 'ambos') {
+                        var ignoraPorMalha = ignorarForaMalha && isForaMalha;
+                        var ignoraPorNome = ignorarSemNome && isSemNome;
+
+                        if (!ignoraPorMalha && !ignoraPorNome) {
+                            if (velReg > velMaxViaRegulamentada) {
+                                var deltaExcesso = velReg - velMaxViaRegulamentada;
+                                var forcarIgnorarTolerante = ignorarMargemTolerada || (mbfAtivo && velReg > 80);
+
+                                if (forcarIgnorarTolerante || deltaExcesso > valorMargemTolerada) {
+                                    decissaoInfracao = true;
+                                    limiteConsiderado = velMaxViaRegulamentada;
+                                }
+                            }
+                        }
+                    } 
+                    
+                    if (modoRegra === 'cootravale' && !decissaoInfracao) {
+                        limiteConsiderado = velCootravaleDefinida;
+                    }
+
+                    historicoLinhaGrafico.push({ 
+                        vel: velReg, 
+                        limite: limiteConsiderado, 
+                        excesso: decissaoInfracao, 
+                        hora: dataHoraFormatada 
+                    });
+
+                    if (decissaoInfracao) {
+                        picosDeExcessoEstatistica++;
+                        var pct = ((velReg - limiteConsiderado) / limiteConsiderado) * 100;
+                        var uidMarker = Math.random().toString(36).substr(2, 9);
+                        var registro = { uid: uidMarker, lat, lon, velReg, velMaxVia: limiteConsiderado, pct, horario: dataHoraFormatada, nomeVia: viaFinal, cidade: cidadeFinal, marker: null, clima: "⏳", climaTexto: "Aguardando..." };
+                        
+                        registro.marker = plotarMarcadorMapa(registro, true, pct);
+                        listaDeExcessosOcorridos.push(registro);
+                        
+                        if (pct >= 50) listaDeExcessosCriticos.push(registro);
+                    } else {
+                        plotarMarcadorMapa({ uid: Math.random().toString(36).substr(2, 9), lat, lon, velReg, velMaxVia: limiteConsiderado, horario: dataHoraFormatada, nomeVia: viaFinal, cidade: cidadeFinal }, false, 0);
+                    }
+                } 
+
+                pBarra.style.width = ((index / totalPontos) * 100).toFixed(0) + "%";
+
+                if (index < totalPontos) {
+                    setTimeout(fatiarProcessamento, 1);
+                } else {
+                    pBloco.style.display = "none";
+                    document.getElementById('m-total-pontos').innerText = totalPontos;
+                    document.getElementById('m-total-excessos').innerText = listaDeExcessosOcorridos.length;
+
+                    document.getElementById('stat-total-picos').innerText = picosDeExcessoEstatistica;
+                    document.getElementById('stat-max-velocidade').innerText = maiorVelocidadeEncontrada + " km/h";
+
+                    if (vetorCoordenadasTrajeto.length > 0) {
+                        var polylineTrajeto = L.polyline(vetorCoordenadasTrajeto, { color: '#2563eb', weight: 3, opacity: 0.75, dashArray: '4, 6' });
+                        camadaTrajeto.addLayer(polylineTrajeto);
+                        map.fitBounds(polylineTrajeto.getBounds(), { padding: [20, 20] });
+                    }
+
+                    renderizarGraficoLinhaContinuo();
+                    atualizarTabelaDOM();
+                    gerarLegendaClimaDinamica(); 
+                    
+                    if (listaDeExcessosOcorridos.length > 0) {
+                        indiceGeralAtual = 0;
+                        document.getElementById('btn-copiar').disabled = false;
+                        document.getElementById('btn-copiar-img').disabled = false;
+                        
+                        if(document.getElementById('chk-ativar-clima').checked) {
+                            consultarClimaApiOpenMeteo();
+                        }
+                    }
+                    if (listaDeExcessosCriticos.length > 0) indiceCriticoAtual = 0;
+                    
+                    atualizarBotoesNavegacao();
+                    printLog("Análise processada com filtros ativos.");
+                }
+            }
+            setTimeout(fatiarProcessamento, 5);
+        }
+
+        function extrairVelocidadeNumerica(v) {
+            if (!v) return null;
+            var match = String(v).match(/\d+/);
+            return match ? parseInt(match[0], 10) : null;
+        }
+
+        function plotarMarcadorMapa(dados, ehExcesso, pct) {
+            var cor = "var(--vel-normal)";
+            if (ehExcesso) {
+                if (pct >= 50) cor = "var(--excesso-alto)";
+                else if (pct >= 20) cor = "var(--excesso-medio)";
+                else cor = "var(--excesso-baixo)";
+            }
+
+           if (!ehExcesso) {
+                var marcadorNormal = L.circleMarker([dados.lat, dados.lon], {
+                    radius: 4,
+                    fillColor: cor,
+                    color: "#0f172a",
+                    weight: 1,
+                    fillOpacity: 0.85
+                });
+
+                // --- NOVO POPUP PARA PONTOS NORMAIS ---
+                var URLGoogleMaps = `https://www.google.com/maps?q=${dados.lat},${dados.lon}`;
+                var htmlPopupNormal = `
+                    <div style="font-size:0.75rem; line-height:1.4; min-width:180px; color: #1e293b;">
+                        <b style="color:${cor};">✅ Velocidade Regular</b><br>
+                        <b>🏙️ Cidade:</b> ${dados.cidade}<br>
+                        <b>🛣️ Via:</b> ${dados.nomeVia}<br>
+                        <b>⏱️ Tempo:</b> ${dados.horario}<br>
+                        <hr style="margin:4px 0; border:none; border-top:1px solid #ddd;">
+                        <b>📊 Limite:</b> ${dados.velMaxVia} km/h<br>
+                        <b>🚀 Registrado:</b> ${dados.velReg} km/h<br>
+                        <a href="${URLGoogleMaps}" target="_blank" class="gmaps-link">📍 Abrir no Google Maps</a>
+                    </div>
+                `;
+                marcadorNormal.bindPopup(htmlPopupNormal);
+                // --------------------------------------
+
+                camadaNormais.addLayer(marcadorNormal);
+                return marcadorNormal;
+            }
+            
+            var chkClima = document.getElementById('chk-ativar-clima').checked;
+            var exibirEmojiStr = (chkClima && dados.clima && dados.clima !== "⏳" && dados.clima !== "❌") ? dados.clima : "";
+
+            var htmlElemento = `
+                <div class="custom-marker-wrapper" id="marker-wrapper-${dados.uid}">
+                    <div class="custom-marker-dot" style="background: ${cor};"></div>
+                    <div class="custom-marker-weather">${exibirEmojiStr}</div>
+                </div>
+            `;
+
+            var marcadorExcesso = L.marker([dados.lat, dados.lon], {
+                icon: L.divIcon({
+                    html: htmlElemento,
+                    className: '', 
+                    iconSize: [20, 20],
+                    iconAnchor: [7, 7]
+                })
+            });
+
+            atualizarPopupMarcador(marcadorExcesso, dados, ehExcesso, pct, cor);
+            camadaExcedentes.addLayer(marcadorExcesso);
+            return marcadorExcesso;
+        }
+
+        function atualizarPopupMarcador(marcador, dados, ehExcesso, pct, cor) {
+            if (!marcador) return;
+            var URLGoogleMaps = `https://www.google.com/maps/search/?api=1&query=${dados.lat},${dados.lon}`;
+            var chkClima = document.getElementById('chk-ativar-clima').checked;
+            
+            var infoClimaPopup = "";
+            if (chkClima && dados.climaTexto && dados.climaTexto !== "Aguardando...") {
+                infoClimaPopup = `<b>🌤️ Tempo Local:</b> ${dados.clima} (${dados.climaTexto})<br>`;
+            }
+
+            var htmlPopup = `
+                <div style="font-size:0.75rem; line-height:1.4; min-width:180px; color: #1e293b;">
+                    <b style="color:${cor};">${ehExcesso ? "⚠️ Limite Violado" : "✅ Velocidade Regular"}</b><br>
+                    <b>🏙️ Cidade:</b> ${dados.cidade}<br>
+                    <b>🛣️ Via:</b> ${dados.nomeVia}<br>
+                    <b>⏱️ Tempo:</b> ${dados.horario}<br>
+                    ${infoClimaPopup}
+                    <hr style="margin:4px 0; border:none; border-top:1px solid #ddd;">
+                    <b>⛔ Limite Avaliado:</b> ${dados.velMaxVia} km/h<br>
+                    <b>🚀 Registrado:</b> <span style="font-weight:bold; color:red;">${dados.velReg} km/h</span><br>
+                    ${ehExcesso ? `<b>📈 Percentual:</b> +${pct.toFixed(1)}%<br>` : ''}
+                    <a href="${URLGoogleMaps}" target="_blank" class="gmaps-link">📍 Abrir no Google Maps</a>
+                </div>
+            `;
+            marcador.bindPopup(htmlPopup);
+        }
+
+        function formatarDataHora(v) {
+            if (!v) return "N/A";
+            if (v instanceof Date && !isNaN(v.getTime())) return v.toLocaleString('pt-BR');
+            return String(v);
+        }
+
+        function inicializarGraficoVazio() {
+            var ctx = document.getElementById('chartExcessosFaixas').getContext('2d');
+            graficoInstancia = new Chart(ctx, { type: 'line', data: { labels: [], datasets: [] } });
+        }
+
+        function renderizarGraficoLinhaContinuo() {
+            if (graficoInstancia) graficoInstancia.destroy();
+
+            var rotulosHoraCompleta = historicoLinhaGrafico.map(h => h.hora);
+            var velocidadesRegistradas = historicoLinhaGrafico.map(h => h.vel);
+            var limitesFixados = historicoLinhaGrafico.map(h => h.limite);
+
+            var ctx = document.getElementById('chartExcessosFaixas').getContext('2d');
+            graficoInstancia = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: rotulosHoraCompleta,
+                    datasets: [
+                        {
+                            label: 'Velocidade do Veículo (km/h)',
+                            data: velocidadesRegistradas,
+                            borderWidth: 2.5,
+                            tension: 0.15,
+                            fill: false,
+                            segment: {
+                                borderColor: ctx => historicoLinhaGrafico[ctx.p0DataIndex]?.excesso ? '#dc2626' : '#22c55e'
+                            },
+                            pointRadius: 1,
+                            pointBackgroundColor: '#1e293b'
+                        },
+                        {
+                            label: 'Limite Aplicado',
+                            data: limitesFixados,
+                            borderColor: '#eab308',
+                            borderWidth: 1.5,
+                            borderDash: [5, 5],
+                            fill: false,
+                            pointRadius: 0
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { labels: { boxWidth: 12, font: { size: 10 } } }
+                    },
+                    scales: {
+                        y: { min: 0 },
+                        x: { ticks: { font: { size: 8 }, maxRotation: 45, minRotation: 45 }, grid: { display: false } }
+                    }
+                }
+            });
+        }
+
+        function atualizarTabelaDOM() {
+            var tbody = document.getElementById('tbody-dados');
+            tbody.innerHTML = "";
+
+            if (listaDeExcessosOcorridos.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="8" style="text-align:center; color:#94a3b8; padding:30px;">Nenhum excesso qualificado nas regras atuais.</td></tr>`;
+                return;
+            }
+
+            listaDeExcessosOcorridos.forEach((exc, idx) => {
+                if(!exc.uid) exc.uid = Math.random().toString(36).substr(2, 9);
+                var styleCritico = exc.pct >= 50 ? "background:#fff5f5; font-weight:bold;" : "";
+                var tr = document.createElement('tr');
+                tr.id = "tr-geral-" + idx;
+                tr.style = styleCritico;
+                tr.innerHTML = `
+                    <td title="${exc.cidade}">${exc.cidade}</td>
+                    <td title="${exc.nomeVia}">${exc.nomeVia}</td>
+                    <td>${exc.horario}</td>
+                    <td>${exc.velMaxVia} km/h</td>
+                    <td style="color:#dc2626;">${exc.velReg} km/h (+${exc.pct.toFixed(0)}%)</td>
+                    <td class="col-clima" id="td-clima-${exc.uid}" style="font-size: 1.1rem; font-weight: normal;" title="${exc.climaTexto || ''}">${exc.clima || '⏳'}</td>
+                    <td style="text-align:center;" class="col-foco-ignore"><button style="cursor:pointer; background:none; border:none; font-size:1.1rem; transition:transform 0.1s;" onmouseover="this.style.transform='scale(1.2)'" onmouseout="this.style.transform='scale(1)'" title="Focar no mapa" onclick="focarPontoGeral(${idx})">🎯</button></td>
+                    <td style="text-align:center;" class="col-foco-ignore"><button style="cursor:pointer; background:#fee2e2; border:1px solid #ef4444; border-radius:4px; font-size:0.65rem; font-weight:bold; padding:4px 6px; color:#b91c1c; transition:background 0.2s;" onmouseover="this.style.background='#fca5a5'" onmouseout="this.style.background='#fee2e2'" title="Ocultar linha" onclick="desconsiderarLinha(${idx})">❌</button></td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        function alternarModuloClimaOcorrencias() {
+            var chk = document.getElementById('chk-ativar-clima');
+            var tabelaContainer = document.getElementById('table-container');
+            
+            if (chk.checked) {
+                tabelaContainer.classList.add('exibir-clima');
+                if (listaDeExcessosOcorridos.length > 0) {
+                    consultarClimaApiOpenMeteo();
+                }
+            } else {
+                tabelaContainer.classList.remove('exibir-clima');
+                document.getElementById('weather-legend').style.display = 'none';
+            }
+            
+            listaDeExcessosOcorridos.forEach((exc, idx) => {
+                atualizarVisualMarcadorClima(exc);
+            });
+        }
+
+        function consultarClimaApiOpenMeteo() {
+            if (listaDeExcessosOcorridos.length === 0) return;
+            
+            printLog("Requisitando dados climáticos em tempo real...");
+            
+            listaDeExcessosOcorridos.forEach((exc) => {
+                if (exc.clima && exc.clima !== "⏳" && exc.clima !== "❌") return;
+
+                var urlClima = `https://api.open-meteo.com/v1/forecast?latitude=${exc.lat}&longitude=${exc.lon}&current_weather=true`;
+                
+                fetch(urlClima)
+                    .then(res => res.json())
+                    .then(data => {
+                        if (data && data.current_weather) {
+                            var code = data.current_weather.weathercode;
+                            var infoObjeto = obterSimboloClimaOpenMeteo(code);
+                            
+                            exc.clima = infoObjeto.simbolo;
+                            exc.climaTexto = infoObjeto.texto;
+                            
+                            var tdAlvo = document.getElementById(`td-clima-${exc.uid}`);
+                            if (tdAlvo) {
+                                tdAlvo.innerText = infoObjeto.simbolo;
+                                tdAlvo.title = infoObjeto.texto;
+                            }
+                            
+                            atualizarVisualMarcadorClima(exc);
+                            gerarLegendaClimaDinamica();
+                        }
+                    })
+                    .catch(() => {
+                        exc.clima = "❌";
+                        exc.climaTexto = "Erro";
+                        var tdAlvo = document.getElementById(`td-clima-${exc.uid}`);
+                        if (tdAlvo) tdAlvo.innerText = "❌";
+                    });
+            });
+        }
+
+        function atualizarVisualMarcadorClima(exc) {
+            if (!exc.marker) return;
+            
+            var cor = "var(--excesso-baixo)";
+            if (exc.pct >= 50) cor = "var(--excesso-alto)";
+            else if (exc.pct >= 20) cor = "var(--excesso-medio)";
+            
+            var chkClima = document.getElementById('chk-ativar-clima').checked;
+            var emojiClima = (chkClima && exc.clima && exc.clima !== "⏳" && exc.clima !== "❌") ? exc.clima : "";
+
+            var containerMarcador = document.getElementById(`marker-wrapper-${exc.uid}`);
+            if (containerMarcador) {
+                var elWeather = containerMarcador.querySelector('.custom-marker-weather');
+                if (elWeather) elWeather.innerText = emojiClima;
+            } else {
+                var htmlElemento = `
+                    <div class="custom-marker-wrapper" id="marker-wrapper-${exc.uid}">
+                        <div class="custom-marker-dot" style="background: ${cor};"></div>
+                        <div class="custom-marker-weather">${emojiClima}</div>
+                    </div>
+                `;
+                exc.marker.setIcon(L.divIcon({
+                    html: htmlElemento,
+                    className: '',
+                    iconSize: [20, 20],
+                    iconAnchor: [7, 7]
+                }));
+            }
+            
+            atualizarPopupMarcador(exc.marker, exc, true, exc.pct, cor);
+        }
+
+        function gerarLegendaClimaDinamica() {
+            var boxLegenda = document.getElementById('weather-legend');
+            var listaLegenda = document.getElementById('weather-legend-items');
+            var chkClima = document.getElementById('chk-ativar-clima').checked;
+            
+            if (!chkClima || listaDeExcessosOcorridos.length === 0) {
+                boxLegenda.style.display = 'none';
+                return;
+            }
+
+            var climasPresentes = [];
+            listaDeExcessosOcorridos.forEach(exc => {
+                if(exc.clima && exc.clima !== "⏳" && exc.clima !== "❌") {
+                    if(!climasPresentes.includes(exc.clima)) {
+                        climasPresentes.push(exc.clima);
+                    }
+                }
+            });
+
+            if (climasPresentes.length === 0) {
+                boxLegenda.style.display = 'none';
+                return;
+            }
+
+            listaLegenda.innerHTML = "";
+            climasPresentes.forEach(simbolo => {
+                var descricaoText = MAPA_DICIONARIO_CLIMA[simbolo] || "Condição Identificada";
+                var itemDiv = document.createElement('div');
+                itemDiv.className = "legend-item";
+                itemDiv.innerHTML = `<span>${simbolo}</span> ${descricaoText}`;
+                listaLegenda.appendChild(itemDiv);
+            });
+
+            boxLegenda.style.display = 'block';
+        }
+
+        function obterSimboloClimaOpenMeteo(code) {
+            if (code === 0) return { simbolo: "☀️", texto: "Céu Limpo" };
+            if (code >= 1 && code <= 3) return { simbolo: "⛅", texto: "Nublado" };
+            if (code === 45 || code === 48) return { simbolo: "🌫️", texto: "Nevoeiro" };
+            if (code >= 51 && code <= 55) return { simbolo: "🌧️", texto: "Chuva Leve" };
+            if (code >= 61 && code <= 65) return { simbolo: "🌧️", texto: "Chuva" };
+            if (code >= 71 && code <= 77) return { simbolo: "🌨️", texto: "Neve" };
+            if (code >= 80 && code <= 82) return { simbolo: "🌧️", texto: "Pancadas de Chuva" };
+            if (code >= 95 && code <= 99) return { simbolo: "⛈️", texto: "Tempestade" };
+            return { simbolo: "⛅", texto: "Variável" };
+        }
+
+        function copiarDadosTabelaExcelRichText() {
+            if (listaDeExcessosOcorridos.length === 0) return;
+
+            var exibirClimaAtivo = document.getElementById('chk-ativar-clima').checked;
+
+            var plainText = "Cidade\tVia\tData e Hora\tVelocidade da Via\tVelocidade Registrada" + (exibirClimaAtivo ? "\tClima\n" : "\n");
+            var htmlText = `
+            <html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
+            <head>
+                <meta charset="utf-8">
+                <style>
+                    td { vertical-align: middle; white-space: nowrap; font-family: Calibri, sans-serif; font-size: 11pt; padding: 6px 12px; border: 0.5pt solid #cbd5e1; }
+                    th { font-family: Calibri, sans-serif; font-size: 11pt; font-weight: bold; background-color: #f1f5f9; color: #475569; padding: 8px 12px; border: 0.5pt solid #cbd5e1; }
+                </style>
+            </head>
+            <body>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Cidade</th>
+                        <th>Via</th>
+                        <th>Data e Hora</th>
+                        <th>Velocidade da Via</th>
+                        <th>Velocidade Registrada</th>
+                        ${exibirClimaAtivo ? "<th>Clima</th>" : ""}
+                    </tr>
+                </thead>
+                <tbody>`;
+
+            listaDeExcessosOcorridos.forEach(e => {
+                var textoClimaCopia = exibirClimaAtivo ? `${e.clima} ${e.climaTexto}` : '';
+                plainText += `${e.cidade}\t${e.nomeVia}\t${e.horario}\t${e.velMaxVia} km/h\t${e.velReg} km/h (+${e.pct.toFixed(0)}%)` + (exibirClimaAtivo ? `\t${textoClimaCopia}\n` : '\n');
+                
+                var corFundoLinha = e.pct >= 50 ? "background-color: #fef2f2;" : "background-color: #ffffff;";
+                htmlText += `<tr style="${corFundoLinha}">
+                    <td>${e.cidade}</td>
+                    <td>${e.nomeVia}</td>
+                    <td>${e.horario}</td>
+                    <td style="text-align: center;">${e.velMaxVia} km/h</td>
+                    <td style="text-align: center; color: #b91c1c; font-weight: bold;">${e.velReg} km/h (+${e.pct.toFixed(0)}%)</td>
+                    ${exibirClimaAtivo ? `<td style="text-align: center;">${textoClimaCopia}</td>` : ""}
+                </tr>`;
+            });
+
+            htmlText += "</tbody></table></body></html>";
+
+            var blobText = new Blob([plainText], { type: "text/plain" });
+            var blobHtml = new Blob([htmlText], { type: "text/html" });
+
+            var itemClipboard = [new ClipboardItem({ "text/plain": blobText, "text/html": blobHtml })];
+
+            navigator.clipboard.write(itemClipboard).then(() => { mostrarToastNotificacao(); });
+        }
+
+        function copiarTabelaComoImagemTotal() {
+            var alvoDOM = document.getElementById('div-captura-tabela');
+            if (!alvoDOM || listaDeExcessosOcorridos.length === 0) return;
+
+            document.querySelectorAll('.col-foco-ignore').forEach(el => el.style.display = 'none');
+            alvoDOM.classList.add('modo-captura-total');
+
+            html2canvas(alvoDOM, {
+                backgroundColor: "#ffffff",
+                scale: 2, 
+                logging: false,
+                useCORS: true,
+                windowWidth: alvoDOM.scrollWidth,
+                windowHeight: alvoDOM.scrollHeight
+            }).then(canvas => {
+                alvoDOM.classList.remove('modo-captura-total');
+                document.querySelectorAll('.col-foco-ignore').forEach(el => el.style.display = '');
+
+                canvas.toBlob(blob => {
+                    var item = [new ClipboardItem({ "image/png": blob })];
+                    navigator.clipboard.write(item).then(() => { mostrarToastNotificacao(); });
+                }, "image/png");
+            }).catch(err => {
+                alvoDOM.classList.remove('modo-captura-total');
+                document.querySelectorAll('.col-foco-ignore').forEach(el => el.style.display = '');
+            });
+        }
+
+        function mostrarToastNotificacao() {
+            var toast = document.getElementById('toast-alert');
+            toast.style.display = 'block';
+            setTimeout(() => { toast.style.display = 'none'; }, 1200);
+        }
+
+        function atualizarBotoesNavegacao() {
+            document.getElementById('btn-ant').disabled = (indiceGeralAtual <= 0);
+            document.getElementById('btn-prox').disabled = (indiceGeralAtual === -1 || indiceGeralAtual >= listaDeExcessosOcorridos.length - 1);
+            document.getElementById('nav-contador').innerText = `${listaDeExcessosOcorridos.length === 0 ? 0 : indiceGeralAtual + 1} / ${listaDeExcessosOcorridos.length}`;
+
+            document.getElementById('btn-crit-ant').disabled = (indiceCriticoAtual <= 0);
+            document.getElementById('btn-crit-prox').disabled = (indiceCriticoAtual === -1 || indiceCriticoAtual >= listaDeExcessosCriticos.length - 1);
+            document.getElementById('nav-crit-contador').innerText = `${listaDeExcessosCriticos.length === 0 ? 0 : indiceCriticoAtual + 1} / ${listaDeExcessosCriticos.length}`;
+        }
+
+        function focarPontoGeral(idx) {
+            if (idx < 0 || idx >= listaDeExcessosOcorridos.length) return;
+            indiceGeralAtual = idx;
+            
+            var item = listaDeExcessosOcorridos[idx];
+            map.setView([item.lat, item.lon], 17);
+            if (item.marker) item.marker.openPopup();
+
+            document.querySelectorAll("#tbody-dados tr").forEach(el => el.style.borderLeft = "none");
+            var tr = document.getElementById("tr-geral-" + idx);
+            if (tr) {
+                tr.style.borderLeft = "4px solid #2563eb";
+                tr.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            }
+            atualizarBotoesNavegacao();
+        }
+
+        function pularGeral(dir) {
+            var nIdx = indiceGeralAtual + dir;
+            if (nIdx >= 0 && nIdx < listaDeExcessosOcorridos.length) focarPontoGeral(nIdx);
+        }
+
+        function pularCritico(dir) {
+            var nIdx = indiceCriticoAtual + dir;
+            if (nIdx >= 0 && nIdx < listaDeExcessosCriticos.length) {
+                indiceCriticoAtual = nIdx;
+                var itemCritico = listaDeExcessosCriticos[nIdx];
+                var globalIdx = listaDeExcessosOcorridos.indexOf(itemCritico);
+                focarPontoGeral(globalIdx);
+            }
+        }
+
+        // Função responsável por desconsiderar um ponto após sua validação
+        function desconsiderarLinha(idx) {
+            var item = listaDeExcessosOcorridos[idx];
+            if (!item) return;
+
+            // 1. Remove o marcador correspondente do Mapa
+            if (item.marker) {
+                camadaExcedentes.removeLayer(item.marker);
+            }
+
+            // 2. Remove o item do Array Global
+            listaDeExcessosOcorridos.splice(idx, 1);
+
+            // 3. Remove do Array de Críticos (se fizer parte)
+            var idxCritico = listaDeExcessosCriticos.indexOf(item);
+            if (idxCritico > -1) {
+                listaDeExcessosCriticos.splice(idxCritico, 1);
+            }
+
+            // 4. Atualiza os Totalizadores visuais (O gráfico permanece intacto propositalmente)
+            document.getElementById('m-total-excessos').innerText = listaDeExcessosOcorridos.length;
+
+            // 5. Ajusta os Índices de Navegação para evitar botões travados caso apague a última linha
+            if (indiceGeralAtual >= listaDeExcessosOcorridos.length) {
+                indiceGeralAtual = Math.max(0, listaDeExcessosOcorridos.length - 1);
+            }
+            if (indiceCriticoAtual >= listaDeExcessosCriticos.length) {
+                indiceCriticoAtual = Math.max(0, listaDeExcessosCriticos.length - 1);
+            }
+
+            // 6. Recria a tabela limpa (atualizando os Data-IDs para não quebrar interações)
+            atualizarTabelaDOM();
+            atualizarBotoesNavegacao();
+        }
+    </script>
+</body>
+</html>
