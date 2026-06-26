@@ -181,7 +181,7 @@
 <body>
 
     <header>
-        <h1>🚗 Auditor de Telemetria V28.1</h1>
+        <h1>🚗 Auditor de Telemetria V28.2</h1>
         <div style="font-size: 0.75rem; opacity: 0.85;">Mapeamento de excessos de velocidades acima do limite</div>
     </div>
     <button id="btn-sobre" style="
@@ -464,14 +464,15 @@
         var historicoLinhaGrafico = []; 
         
         var MAPA_DICIONARIO_CLIMA = {
-            "☀️": "Céu Limpo",
-            "⛅": "Parcial Nublado",
-            "🌫️": "Nevoeiro / Neblina",
-            "🌧️": "Chuva / Pancadas",
-            "🌨️": "Neve / Granizo",
-            "⛈️": "Tempestade / Temporal",
-            "💨": "Vento Forte"
-        };
+    "☀️": "Céu Limpo (Dia)",
+    "🌙": "Céu Limpo (Noite)",     // Adicionado para a Noite
+    "⛅": "Nublado parcial (Dia)",
+    "☁️": "Nublado (Noite)",        // Adicionado para a Noite
+    "🌫️": "Nevoeiro / Névoa",
+    "🌧️": "Chuva / Chuva Leve",
+    "🌨️": "Neve",
+    "⛈️": "Tempestade / Raios"
+};
 
         var indiceGeralAtual = -1;
         var indiceCriticoAtual = -1;
@@ -1170,44 +1171,131 @@
             });
         }
 
-        function consultarClimaApiOpenMeteo() {
-            if (listaDeExcessosOcorridos.length === 0) return;
-            
-            printLog("Requisitando dados climáticos em tempo real...");
-            
-            listaDeExcessosOcorridos.forEach((exc) => {
-                if (exc.clima && exc.clima !== "⏳" && exc.clima !== "❌") return;
+       function consultarClimaApiOpenMeteo() {
+    if (listaDeExcessosOcorridos.length === 0) return;
+    
+    printLog("Requisitando dados climáticos históricos padronizados por horário comercial...");
+    
+    listaDeExcessosOcorridos.forEach((exc) => {
+        if (exc.clima && exc.clima !== "⏳" && exc.clima !== "❌") return;
 
-                var urlClima = `https://api.open-meteo.com/v1/forecast?latitude=${exc.lat}&longitude=${exc.lon}&current_weather=true`;
+        var urlClima = `https://api.open-meteo.com/v1/forecast?latitude=${exc.lat}&longitude=${exc.lon}&current_weather=true`;
+        var dataHoraAlvoIso = "";
+        var horaInteiraDoExcesso = 12; // Valor padrão seguro
+        
+        try {
+            if (exc.horario) {
+                var partesGerais = exc.horario.split(' ');
+                var dataParte = partesGerais[0]; 
+                var horaParte = partesGerais[1]; 
                 
-                fetch(urlClima)
-                    .then(res => res.json())
-                    .then(data => {
-                        if (data && data.current_weather) {
-                            var code = data.current_weather.weathercode;
-                            var infoObjeto = obterSimboloClimaOpenMeteo(code);
-                            
-                            exc.clima = infoObjeto.simbolo;
-                            exc.climaTexto = infoObjeto.texto;
-                            
-                            var tdAlvo = document.getElementById(`td-clima-${exc.uid}`);
-                            if (tdAlvo) {
-                                tdAlvo.innerText = infoObjeto.simbolo;
-                                tdAlvo.title = infoObjeto.texto;
-                            }
-                            
-                            atualizarVisualMarcadorClima(exc);
-                            gerarLegendaClimaDinamica();
-                        }
-                    })
-                    .catch(() => {
-                        exc.clima = "❌";
-                        exc.climaTexto = "Erro";
-                        var tdAlvo = document.getElementById(`td-clima-${exc.uid}`);
-                        if (tdAlvo) tdAlvo.innerText = "❌";
-                    });
-            });
+                var pData = dataParte.split('/');
+                var ano = pData[2];
+                var mes = pData[1];
+                var dia = pData[0];
+                
+                var pHora = horaParte.split(':');
+                var horaStr = pHora[0]; 
+                horaInteiraDoExcesso = parseInt(horaStr); // Guarda a hora como número (ex: 6)
+                
+                dataHoraAlvoIso = `${ano}-${mes}-${dia}T${horaStr}:00`;
+                
+                urlClima = `https://api.open-meteo.com/v1/forecast?latitude=${exc.lat}&longitude=${exc.lon}&start_date=${ano}-${mes}-${dia}&end_date=${ano}-${mes}-${dia}&hourly=weathercode&timezone=auto`;
+            }
+        } catch(err) {
+            console.error("Erro ao formatar data histórica do excesso:", err);
         }
+        
+        fetch(urlClima)
+            .then(res => res.json())
+            .then(data => {
+                var code = 0;
+
+                if (data && data.hourly && data.hourly.time) {
+                    var idx = data.hourly.time.indexOf(dataHoraAlvoIso);
+                    if (idx !== -1) {
+                        code = data.hourly.weathercode[idx] !== undefined ? data.hourly.weathercode[idx] : 0;
+                    } else {
+                        var horaSegura = parseInt(dataHoraAlvoIso.split('T')[1].split(':')[0]) || 0;
+                        code = data.hourly.weathercode[horaSegura] !== undefined ? data.hourly.weathercode[horaSegura] : 0;
+                    }
+                } 
+                
+                // ============================================================
+                // REGRA DE OURO AUTOMÁTICA: Você define o fuso comercial
+                // Se o relógio marcar entre 06:00 e 17:59, força DIA (1). Caso contrário, NOITE (0).
+                // ============================================================
+                var isDayForçado = (horaInteiraDoExcesso >= 6 && horaInteiraDoExcesso < 18) ? 1 : 0;
+                
+                // Passa o código de chuva/nuvem da API, mas o Dia/Noite controlado por nós!
+                var infoObjeto = obterSimboloClimaOpenMeteo(code, isDayForçado);
+                
+                exc.clima = infoObjeto.simbolo;
+                exc.climaTexto = infoObjeto.texto;
+                
+                // 1. Atualiza a tabela lateral
+                var tdAlvo = document.getElementById(`td-clima-${exc.uid}`);
+                if (tdAlvo) {
+                    tdAlvo.innerText = infoObjeto.simbolo;
+                    tdAlvo.title = infoObjeto.texto;
+                }
+                
+                // 2. Atualiza o Pop-up aberto no mapa Leaflet
+                if (exc.marker) {
+                    var popupAtual = exc.marker.getPopup();
+                    if (popupAtual) {
+                        var conteudoOriginal = popupAtual.getContent();
+                        var novoConteudo = conteudoOriginal.replace(
+                            /<b>Tempo Local:<\/b>.*?(?=<br>|<\/div>|$)/i, 
+                            `<b>Tempo Local:</b> ${infoObjeto.simbolo} (${infoObjeto.texto})`
+                        );
+                        popupAtual.setContent(novoConteudo);
+                    }
+                }
+                
+                atualizarVisualMarcadorClima(exc);
+                gerarLegendaClimaDinamica();
+            })
+            .catch((err) => {
+                console.error(err);
+                exc.clima = "❌";
+                exc.climaTexto = "Erro";
+                var tdAlvo = document.getElementById(`td-clima-${exc.uid}`);
+                if (tdAlvo) tdAlvo.innerText = "❌";
+            });
+    });
+}
+function obterSimboloClimaOpenMeteo(code, isDay) {
+    // Se isDay for 0, significa que é noite no local pesquisado
+    var ehNoite = (isDay === 0);
+
+    if (code === 0) {
+        return ehNoite ? { simbolo: "🌙", texto: "Céu Limpo (Noite)" } : { simbolo: "☀️", texto: "Céu Limpo (Dia)" };
+    }
+    if (code >= 1 && code <= 3) {
+        return ehNoite ? { simbolo: "☁️", texto: "Nublado (Noite)" } : { simbolo: "⛅", texto: "Nublado (Dia)" };
+    }
+    if (code === 45 || code === 48) {
+        return { simbolo: "🌫️", texto: "Nevoeiro" };
+    }
+    if (code >= 51 && code <= 55) {
+        return { simbolo: "🌧️", texto: "Chuva Leve" };
+    }
+    if (code >= 61 && code <= 65) {
+        return { simbolo: "🌧️", texto: "Chuva" };
+    }
+    if (code >= 71 && code <= 77) {
+        return { simbolo: "🌨️", texto: "Neve" };
+    }
+    if (code >= 80 && code <= 82) {
+        return { simbolo: "🌧️", texto: "Pancadas de Chuva" };
+    }
+    if (code >= 95 && code <= 99) {
+        return { simbolo: "⛈️", texto: "Tempestade" };
+    }
+    
+    return ehNoite ? { simbolo: "☁️", texto: "Variável (Noite)" } : { simbolo: "⛅", texto: "Variável (Dia)" };
+}
 
         function atualizarVisualMarcadorClima(exc) {
             if (!exc.marker) return;
@@ -1242,53 +1330,48 @@
         }
 
         function gerarLegendaClimaDinamica() {
-            var boxLegenda = document.getElementById('weather-legend');
-            var listaLegenda = document.getElementById('weather-legend-items');
-            var chkClima = document.getElementById('chk-ativar-clima').checked;
-            
-            if (!chkClima || listaDeExcessosOcorridos.length === 0) {
-                boxLegenda.style.display = 'none';
-                return;
+    var boxLegenda = document.getElementById('weather-legend');
+    var listaLegenda = document.getElementById('weather-legend-items');
+    var chkClima = document.getElementById('chk-ativar-clima').checked;
+    
+    if (!chkClima || listaDeExcessosOcorridos.length === 0) {
+        boxLegenda.style.display = 'none';
+        return;
+    }
+
+    var climasPresentes = [];
+    var dicionarioDescricoes = {}; // Salva o texto exato gerado para cada símbolo
+
+    listaDeExcessosOcorridos.forEach(exc => {
+        if(exc.clima && exc.clima !== "⏳" && exc.clima !== "❌") {
+            if(!climasPresentes.includes(exc.clima)) {
+                climasPresentes.push(exc.clima);
             }
-
-            var climasPresentes = [];
-            listaDeExcessosOcorridos.forEach(exc => {
-                if(exc.clima && exc.clima !== "⏳" && exc.clima !== "❌") {
-                    if(!climasPresentes.includes(exc.clima)) {
-                        climasPresentes.push(exc.clima);
-                    }
-                }
-            });
-
-            if (climasPresentes.length === 0) {
-                boxLegenda.style.display = 'none';
-                return;
-            }
-
-            listaLegenda.innerHTML = "";
-            climasPresentes.forEach(simbolo => {
-                var descricaoText = MAPA_DICIONARIO_CLIMA[simbolo] || "Condição Identificada";
-                var itemDiv = document.createElement('div');
-                itemDiv.className = "legend-item";
-                itemDiv.innerHTML = `<span>${simbolo}</span> ${descricaoText}`;
-                listaLegenda.appendChild(itemDiv);
-            });
-
-            boxLegenda.style.display = 'block';
+            // Guarda o texto correto (ex: "Céu Limpo (Noite)") vinculado ao símbolo
+            dicionarioDescricoes[exc.clima] = exc.climaTexto;
         }
+    });
 
-        function obterSimboloClimaOpenMeteo(code) {
-            if (code === 0) return { simbolo: "☀️", texto: "Céu Limpo" };
-            if (code >= 1 && code <= 3) return { simbolo: "⛅", texto: "Nublado" };
-            if (code === 45 || code === 48) return { simbolo: "🌫️", texto: "Nevoeiro" };
-            if (code >= 51 && code <= 55) return { simbolo: "🌧️", texto: "Chuva Leve" };
-            if (code >= 61 && code <= 65) return { simbolo: "🌧️", texto: "Chuva" };
-            if (code >= 71 && code <= 77) return { simbolo: "🌨️", texto: "Neve" };
-            if (code >= 80 && code <= 82) return { simbolo: "🌧️", texto: "Pancadas de Chuva" };
-            if (code >= 95 && code <= 99) return { simbolo: "⛈️", texto: "Tempestade" };
-            return { simbolo: "⛅", texto: "Variável" };
-        }
+    if (climasPresentes.length === 0) {
+        boxLegenda.style.display = 'none';
+        return;
+    }
 
+    listaLegenda.innerHTML = "";
+    climasPresentes.forEach(simbolo => {
+        // Usa a descrição salva ou uma genérica de segurança
+        var descricaoText = dicionarioDescricoes[simbolo] || "Condição Identificada";
+        
+        var itemDiv = document.createElement('div');
+        itemDiv.className = "legend-item";
+        itemDiv.innerHTML = `<span>${simbolo}</span> ${descricaoText}`;
+        listaLegenda.appendChild(itemDiv);
+    });
+
+    boxLegenda.style.display = 'block';
+}
+
+        
         function copiarDadosTabelaExcelRichText() {
             if (listaDeExcessosOcorridos.length === 0) return;
 
