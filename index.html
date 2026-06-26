@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-    <title>Mapeamento de Excesso de Velocidade</title>
+    <title> Mapeamento de Excesso de Velocidade</title>
     <meta name="description" content="Ferramenta online para identificar excessos de velocidade acima do limite da via em rodovias e excessos na chuva. Importe sua planilha XLSX com latitude, longitude e velocidade.">
     <meta name="keywords" content="telemetria, auditor de telemetria, excesso de velocidade, excessos na chuva, clima na viagem, planilha de rastreador, geojson rodovias, mapeamento de vias">
     <meta name="author" content="Pablo Julier">
@@ -15,6 +15,10 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 
     <style>
         :root {
@@ -31,6 +35,7 @@
             --excesso-alto: #7f1d1d;
         }
 
+        
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', system-ui, sans-serif; }
         body { background-color: var(--bg-main); color: var(--text); display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
         
@@ -162,12 +167,21 @@
             pointer-events: none;
             white-space: nowrap;
         }
+        #bottom-panel.painel-expandido #table-container {
+    display: none !important;
+        }
+
+        /* Garante que o container do gráfico ocupe 100% do espaço quando expandido */
+        .painel-expandido #table-container {
+    display: none !important;
+}
+        
     </style>
 </head>
 <body>
 
     <header>
-        <h1>🚗 Auditor de Telemetria V27.20</h1>
+        <h1>🚗 Auditor de Telemetria V27.50</h1>
         <div style="font-size: 0.75rem; opacity: 0.85;">Mapeamento de excessos de velocidades acima do limite</div>
     </div>
     <button id="btn-sobre" style="
@@ -333,10 +347,11 @@
             </div>
 
             <div id="bottom-panel">
-                <button class="btn-expandir-visao" onclick="alternarExpansaoPainelGraficos()">🔍 Expandir Painel (Tabela/Gráfico)</button>
+                <button class="btn-expandir-visao" onclick="alternarExpansaoPainelGraficos()">🔍 Expandir Painel de Gráfico</button>
 
                 <div id="chart-container">
                     <div class="chart-header-stats">
+                        <button id="btn-pdf-grafico" class="btn-acao" onclick="exportarGraficoParaPDF()" style="background:#e11d48; font-size:0.75rem; padding:4px 10px; margin-left: 10px; border-radius:4px; color:white; cursor:pointer; border:none;">📄 Exportar PDF</button>
                         <div class="stat-box-mini">🎯 TOTAL PICOS EXCEDIDOS:<span id="stat-total-picos">0</span></div>
                         <div class="stat-box-mini">⚡ MAIOR VELOCIDADE REGISTRADA:<span id="stat-max-velocidade">0 km/h</span></div>
                     </div>
@@ -344,6 +359,7 @@
                         <canvas id="chartExcessosFaixas"></canvas>
                     </div>
                 </div>
+                
                 
                 <div id="table-container">
                     <div style="display:flex; justify-content:space-between; align-items:center; padding-bottom:4px; gap:4px;">
@@ -972,54 +988,72 @@
         }
 
         function renderizarGraficoLinhaContinuo() {
-            if (graficoInstancia) graficoInstancia.destroy();
+    if (graficoInstancia) graficoInstancia.destroy();
 
-            var rotulosHoraCompleta = historicoLinhaGrafico.map(h => h.hora);
-            var velocidadesRegistradas = historicoLinhaGrafico.map(h => h.vel);
-            var limitesFixados = historicoLinhaGrafico.map(h => h.limite);
+    var rotulosHoraCompleta = historicoLinhaGrafico.map(h => h.hora);
+    var velocidadesRegistradas = historicoLinhaGrafico.map(h => h.vel);
+    var limitesFixados = historicoLinhaGrafico.map(h => h.limite);
 
-            var ctx = document.getElementById('chartExcessosFaixas').getContext('2d');
-            graficoInstancia = new Chart(ctx, {
-                type: 'line',
-                data: {
-                    labels: rotulosHoraCompleta,
-                    datasets: [
-                        {
-                            label: 'Velocidade do Veículo (km/h)',
-                            data: velocidadesRegistradas,
-                            borderWidth: 2.5,
-                            tension: 0.15,
-                            fill: false,
-                            segment: {
-                                borderColor: ctx => historicoLinhaGrafico[ctx.p0DataIndex]?.excesso ? '#dc2626' : '#22c55e'
-                            },
-                            pointRadius: 1,
-                            pointBackgroundColor: '#1e293b'
-                        },
-                        {
-                            label: 'Limite Aplicado',
-                            data: limitesFixados,
-                            borderColor: '#eab308',
-                            borderWidth: 1.5,
-                            borderDash: [5, 5],
-                            fill: false,
-                            pointRadius: 0
+    var ctx = document.getElementById('chartExcessosFaixas').getContext('2d');
+    
+    graficoInstancia = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: rotulosHoraCompleta,
+            datasets: [
+                {
+                    label: 'Velocidade do Veículo (km/h)',
+                    data: velocidadesRegistradas,
+                    borderWidth: 2.5,
+                    tension: 0.1, // Suavização leve para não distorcer a precisão dos picos
+                    fill: false,
+                    pointRadius: 0, // Remove as bolinhas pretas poluídas
+                    pointHoverRadius: 5,
+                    // Esta função analisa o ponto atual e pinta o segmento de vermelho se houver excesso
+                    segment: {
+                        borderColor: function(context) {
+                            var index = context.p1DataIndex;
+                            var dadosPonto = historicoLinhaGrafico[index];
+                            if (dadosPonto && dadosPonto.vel > dadosPonto.limite) {
+                                return '#dc2626'; // Vermelho se estiver acima do limite
+                            }
+                            return '#22c55e'; // Verde se estiver dentro do limite
                         }
-                    ]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: {
-                        legend: { labels: { boxWidth: 12, font: { size: 10 } } }
-                    },
-                    scales: {
-                        y: { min: 0 },
-                        x: { ticks: { font: { size: 8 }, maxRotation: 45, minRotation: 45 }, grid: { display: false } }
                     }
+                },
+                {
+                    label: 'Limite Aplicado',
+                    data: limitesFixados,
+                    borderColor: '#f59e0b', // Amarelo/Laranja para o limite
+                    borderWidth: 2,
+                    borderDash: [5, 5], // Linha tracejada estilizada
+                    fill: false,
+                    pointRadius: 0
                 }
-            });
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: {
+                    position: 'top',
+                    labels: { boxWidth: 12, font: { size: 11 } }
+                }
+            },
+            scales: {
+                y: {
+                    beginAtZero: true,
+                    grid: { color: 'rgba(0, 0, 0, 0.05)' }
+                },
+                x: {
+                    grid: { display: false },
+                    ticks: { maxRotation: 45, minRotation: 45, font: { size: 9 } }
+                }
+            }
         }
+    });
+}
 
         function atualizarTabelaDOM() {
             var tbody = document.getElementById('tbody-dados');
@@ -1352,6 +1386,33 @@
             atualizarTabelaDOM();
             atualizarBotoesNavegacao();
         }
+
+        function exportarGraficoParaPDF() {
+    var alvoDOM = document.getElementById('chart-container');
+    if (!alvoDOM) return;
+
+    var btn = document.getElementById('btn-pdf-grafico');
+    if(btn) btn.style.display = 'none'; // Esconde temporariamente para não sair no PDF
+
+    html2canvas(alvoDOM, { scale: 2, backgroundColor: '#ffffff' }).then(canvas => {
+        if(btn) btn.style.display = ''; // Mostra o botão de volta
+        
+        var imgData = canvas.toDataURL('image/png');
+        var { jsPDF } = window.jspdf ? window.jspdf : { jsPDF: window.jsPDF };
+        
+        if (!jsPDF) {
+            alert("A biblioteca jsPDF não foi detectada no escopo global.");
+            return;
+        }
+
+        var pdf = new jsPDF('l', 'mm', 'a4');
+        pdf.setFont("Helvetica", "bold");
+        pdf.setFontSize(14);
+        pdf.text("Relatório de Telemetria - Gráfico de Velocidade", 10, 15);
+        pdf.addImage(imgData, 'PNG', 10, 25, 277, 150);
+        pdf.save('grafico-velocidades.pdf');
+    });
+}
     </script>
 </body>
 </html>
