@@ -241,14 +241,14 @@
                         <label style="font-weight: bold; color: #1e40af;">🎯 Modo de Regra:</label>
                         <select id="cfg-modo-regra">
                             <option value="via" selected>Apenas Limite da Via</option>
-                            <option value="cootravale">Apenas Limite Definido</option>
+                            <option value="Defi">Apenas Limite Definido</option>
                             <option value="ambos">Ambos (Via + Definido)</option>
                         </select>
                     </div>
 
                     <div class="config-row">
                         <label style="color: #1e40af; font-weight: bold;">🚛 Limite Definido:</label>
-                        <span><input type="number" id="cfg-vel-cootravale" value="88"> km/h</span>
+                        <span><input type="number" id="cfg-vel-Defi" value="88"> km/h</span>
                     </div>
 
                     <hr style="border:none; border-top:1px solid var(--border);">
@@ -684,7 +684,7 @@
             var ignorarSemNome = document.getElementById('chk-ignorar-sem-nome').checked;
             var ignorarForaMalha = document.getElementById('chk-ignorar-fora-malha').checked;
             var modoRegra = document.getElementById('cfg-modo-regra').value;
-            var velCootravaleDefinida = parseFloat(document.getElementById('cfg-vel-cootravale').value) || 88;
+            var velDefiDefinida = parseFloat(document.getElementById('cfg-vel-Defi').value) || 88;
             
             var ignorarMargemTolerada = document.getElementById('chk-ignorar-tolerancia').checked;
             var valorMargemTolerada = parseFloat(document.getElementById('cfg-tolerancia-vel').value) || 0;
@@ -769,10 +769,10 @@
                     var decissaoInfracao = false;
                     var limiteConsiderado = velMaxViaRegulamentada; 
 
-                    var aplicaCootravale = (modoRegra === 'cootravale' || modoRegra === 'ambos');
+                    var aplicaDefi = (modoRegra === 'Defi' || modoRegra === 'ambos');
                     
-                    if (aplicaCootravale && velReg > velCootravaleDefinida) {
-                        // Se o modo for AMBOS, valida se o excesso da via (com CTB/MBF se ativos) é ainda mais rígido que o da Cootravale
+                    if (aplicaDefi && velReg > velDefiDefinida) {
+                        // Se o modo for AMBOS, valida se o excesso da via (com CTB/MBF se ativos) é ainda mais rígido
                         if (modoRegra === 'ambos') {
                             var ignoraPorMalha = ignorarForaMalha && isForaMalha;
                             var ignoraPorNome = ignorarSemNome && isSemNome;
@@ -788,16 +788,16 @@
                             }
                             
                             // Define qual das duas infrações é a mais severa (limite menor considerado)
-                            if (infracaoPelaVia && velMaxViaRegulamentada < velCootravaleDefinida) {
+                            if (infracaoPelaVia && velMaxViaRegulamentada < velDefiDefinida) {
                                 decissaoInfracao = true;
                                 limiteConsiderado = velMaxViaRegulamentada;
                             } else {
                                 decissaoInfracao = true;
-                                limiteConsiderado = velCootravaleDefinida;
+                                limiteConsiderado = velDefiDefinida;
                             }
                         } else {
                             decissaoInfracao = true;
-                            limiteConsiderado = velCootravaleDefinida;
+                            limiteConsiderado = velDefiDefinida;
                         }
                     } 
                     else if (modoRegra === 'via' || modoRegra === 'ambos') {
@@ -817,8 +817,8 @@
                         }
                     } 
                     
-                    if (modoRegra === 'cootravale' && !decissaoInfracao) {
-                        limiteConsiderado = velCootravaleDefinida;
+                    if (modoRegra === 'Defi' && !decissaoInfracao) {
+                        limiteConsiderado = velDefiDefinida;
                     }
 
                     historicoLinhaGrafico.push({ 
@@ -1004,17 +1004,19 @@
             labels: rotulosHoraCompleta,
             datasets: [
                 {
-                    label: 'Velocidade Regular (km/h)',
-                    data: velocidadesRegistradas,
-                    borderWidth: 2.5,
-                    tension: 0, // Usar 0 remove distorções de curvas nas decisões de cores
-                    fill: false,
-                    pointRadius: 0,
-                    pointHoverRadius: 5,
-                    backgroundColor: '#22c55e',
-                    borderColor: '#22c55e',
-                    // Cria um gradiente sob medida para CADA segmento de reta do gráfico
-                    segment: {
+    label: 'Velocidade Regular (km/h)',
+    data: velocidadesRegistradas,
+    borderWidth: 2,
+    tension: 0.3, // Deixa a linha fluida e menos "serrilhada"
+    fill: {
+        target: 'origin',
+        above: 'rgba(34, 197, 94, 0.05)', // Verde bem clarinho de fundo para fluidez
+    },
+    pointRadius: 0,
+    pointHoverRadius: 5,
+    backgroundColor: '#22c55e',
+    borderColor: '#22c55e',
+    segment: {
                         borderColor: function(context) {
                             var idx0 = context.p0DataIndex;
                             var idx1 = context.p1DataIndex;
