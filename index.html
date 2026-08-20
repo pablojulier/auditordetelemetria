@@ -181,7 +181,7 @@
 <body>
 
     <header>
-        <h1>🚗 Auditor de Telemetria V29.1 </h1>
+        <h1>🚗 Auditor de Telemetria V30.2 </h1>
         <div style="font-size: 0.75rem; opacity: 0.85;">Mapeamento de excessos de velocidades acima do limite</div>
     </div>
     <button id="btn-sobre" style="
@@ -1193,16 +1193,17 @@
                 
                 var pData = dataParte.split('/');
                 var ano = pData[2];
-                var mes = pData[1];
-                var dia = pData[0];
+                var mes = pData[1].padStart(2, '0'); // Garante 2 dígitos
+                var dia = pData[0].padStart(2, '0'); // Garante 2 dígitos
                 
                 var pHora = horaParte.split(':');
-                var horaStr = pHora[0]; 
-                horaInteiraDoExcesso = parseInt(horaStr); // Guarda a hora como número (ex: 6)
+                var horaStr = pHora[0].padStart(2, '0'); // Garante 2 dígitos ex: "09"
+                horaInteiraDoExcesso = parseInt(horaStr);
                 
                 dataHoraAlvoIso = `${ano}-${mes}-${dia}T${horaStr}:00`;
                 
-                urlClima = `https://api.open-meteo.com/v1/forecast?latitude=${exc.lat}&longitude=${exc.lon}&start_date=${ano}-${mes}-${dia}&end_date=${ano}-${mes}-${dia}&hourly=weathercode&timezone=auto`;
+                // AJUSTE 1: Adicionado ,precipitation na parâmetro hourly
+                urlClima = `https://api.open-meteo.com/v1/forecast?latitude=${exc.lat}&longitude=${exc.lon}&start_date=${ano}-${mes}-${dia}&end_date=${ano}-${mes}-${dia}&hourly=weathercode,precipitation&timezone=auto`;
             }
         } catch(err) {
             console.error("Erro ao formatar data histórica do excesso:", err);
@@ -1212,18 +1213,98 @@
             .then(res => res.json())
             .then(data => {
                 var code = 0;
+                var precip = 0;
+                
 
+                // AJUSTE 2: Leitura do campo precipitation
                 if (data && data.hourly && data.hourly.time) {
                     var idx = data.hourly.time.indexOf(dataHoraAlvoIso);
                     if (idx !== -1) {
                         code = data.hourly.weathercode[idx] !== undefined ? data.hourly.weathercode[idx] : 0;
+                        precip = data.hourly.precipitation[idx] !== undefined ? data.hourly.precipitation[idx] : 0;
                     } else {
                         var horaSegura = parseInt(dataHoraAlvoIso.split('T')[1].split(':')[0]) || 0;
                         code = data.hourly.weathercode[horaSegura] !== undefined ? data.hourly.weathercode[horaSegura] : 0;
+                        precip = data.hourly.precipitation[horaSegura] !== undefined ? data.hourly.precipitation[horaSegura] : 0;
                     }
                 } 
                 
-                // ============================================================
+                var isDayForçado = (horaInteiraDoExcesso >= 6 && horaInteiraDoExcesso < 18) ? 1 : 0;
+               var infoObjeto = obterSimboloClimaOpenMeteo(code, isDayForçado);
+
+// ============================================================
+// REGRA DE CORTE: Precipitação abaixo de 1.0 mm (Sem chuva significativa)
+// ============================================================
+if (precip > 0 && precip < 1.0) {
+    // Símbolo misto indicando nuvens/sol com chuvisco leve
+    infoObjeto.simbolo = isDayForçado ? "🌦️" : "☁️";
+    infoObjeto.texto = `Sem Chuva Significativa (${precip} mm)`;
+} else if (precip >= 1.0) {
+    infoObjeto.texto = `${infoObjeto.texto} (${precip} mm)`;
+}
+
+exc.clima = infoObjeto.simbolo;
+exc.climaTexto = infoObjeto.texto;
+exc.precipitacao = precip;
+                                
+                // AJUSTE 3: Formatação do texto incluindo os mm
+                var textoComPrecip = precip > 0 
+                    ? `${infoObjeto.texto} - ${precip} mm` 
+                    : infoObjeto.texto;
+
+                exc.clima = infoObjeto.simbolo;
+                exc.climaTexto = textoComPrecip;
+                exc.precipitacao = precip;
+                
+                // 1. Atualiza a tabela lateral
+                var tdAlvo = document.getElementById(`td-clima-${exc.uid}`);
+                if (tdAlvo) {
+                    tdAlvo.innerText = infoObjeto.simbolo;
+                    tdAlvo.title = textoComPrecip;
+                }
+                
+                // 2. Atualiza o Pop-up do Leaflet com o volume de mm
+                if (exc.marker) {
+                    var popupAtual = exc.marker.getPopup();
+                    if (popupAtual) {
+                        var conteudoOriginal = popupAtual.getContent();
+                        var novoConteudo = conteudoOriginal.replace(
+                            /<b>Tempo Local:<\/b>.*?(?=<br>|<\/div>|$)/i, 
+                            `<b>Tempo Local:</b> ${infoObjeto.simbolo} (${textoComPrecip})`
+                        );
+                        popupAtual.setContent(novoConteudo);
+                    }
+                }
+                
+                atualizarVisualMarcadorClima(exc);
+                gerarLegendaClimaDinamica();
+            })
+            .catch((err) => {
+                console.error(err);
+                exc.clima = "❌";
+                exc.climaTexto = "Erro";
+                var tdAlvo = document.getElementById(`td-clima-${exc.uid}`);
+                if (tdAlvo) tdAlvo.innerText = "❌";
+            });
+    });
+}
+            fetch(urlClima)
+            .then(res => res.json())
+            .then(data => {
+                var code = 0;
+var precip = 0; // Guardará a quantidade em mm
+
+if (data && data.hourly && data.hourly.time) {
+    var idx = data.hourly.time.indexOf(dataHoraAlvoIso);
+    if (idx !== -1) {
+        code = data.hourly.weathercode[idx] !== undefined ? data.hourly.weathercode[idx] : 0;
+        precip = data.hourly.precipitation[idx] !== undefined ? data.hourly.precipitation[idx] : 0;
+    } else {
+        var horaSegura = parseInt(dataHoraAlvoIso.split('T')[1].split(':')[0]) || 0;
+        code = data.hourly.weathercode[horaSegura] !== undefined ? data.hourly.weathercode[horaSegura] : 0;
+        precip = data.hourly.precipitation[horaSegura] !== undefined ? data.hourly.precipitation[horaSegura] : 0;
+    }
+}                            // ============================================================
                 // REGRA DE OURO AUTOMÁTICA: Você define o fuso comercial
                 // Se o relógio marcar entre 06:00 e 17:59, força DIA (1). Caso contrário, NOITE (0).
                 // ============================================================
@@ -1231,9 +1312,15 @@
                 
                 // Passa o código de chuva/nuvem da API, mas o Dia/Noite controlado por nós!
                 var infoObjeto = obterSimboloClimaOpenMeteo(code, isDayForçado);
-                
-                exc.clima = infoObjeto.simbolo;
-                exc.climaTexto = infoObjeto.texto;
+
+// Adiciona os milímetros ao texto se houver medição de precipitação
+var textoComPrecip = precip > 0 
+    ? `${infoObjeto.texto} (${precip} mm)` 
+    : `${infoObjeto.texto} (0 mm)`;
+
+exc.clima = infoObjeto.simbolo;
+exc.climaTexto = textoComPrecip;
+exc.precipitacao = precip; // Armazena como propriedade numérica caso precise filtrar depois
                 
                 // 1. Atualiza a tabela lateral
                 var tdAlvo = document.getElementById(`td-clima-${exc.uid}`);
@@ -1265,8 +1352,7 @@
                 var tdAlvo = document.getElementById(`td-clima-${exc.uid}`);
                 if (tdAlvo) tdAlvo.innerText = "❌";
             });
-    });
-}
+    
 function obterSimboloClimaOpenMeteo(code, isDay) {
     // Se isDay for 0, significa que é noite no local pesquisado
     var ehNoite = (isDay === 0);
