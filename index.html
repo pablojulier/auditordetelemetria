@@ -181,7 +181,7 @@
 <body>
 
     <header>
-        <h1>🚗 Auditor de Telemetria V30.2 </h1>
+        <h1>🚗 Auditor de Telemetria V30.3 </h1>
         <div style="font-size: 0.75rem; opacity: 0.85;">Mapeamento de excessos de velocidades acima do limite</div>
     </div>
     <button id="btn-sobre" style="
@@ -226,7 +226,7 @@
                 <div class="section-title">2. Planilha de Leitura </div>
                 <div id="drop-xlsx" class="upload-zone">
                     <strong id="label-xlsx"> ARRASTE AQUI A PLANILHA DE POSIÇÕES </strong>
-                    <input type="file" id="input-xlsx" accept=".xlsx, .xls" style="display:none;">
+                    <input type="file" id="input-xlsx" accept=".xlsx, .xls, .csv" style="display:none;">
                 </div>
                 <div id="status-xlsx" class="status-badge" style="color: #eab308;">Aguardando telemetria...</div>
                 <div class="progress-container" id="progresso-bloco">
@@ -476,7 +476,7 @@
 
         var indiceGeralAtual = -1;
         var indiceCriticoAtual = -1;
-        var colunasMapeadas = { lat: null, lon: null, velocidad: null, dataHora: null, cidade: null };
+        var colunasMapeadas = { lat: null, lon: null, velocidad: null, dataHora: null, cidade: null, dataCol: null, horaCol: null };
 
         window.addEventListener('DOMContentLoaded', function() {
             var googleVias = L.tileLayer('https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}', { attribution: '© Google Maps' });
@@ -632,24 +632,38 @@
             leitor.readAsArrayBuffer(arquivo);
         }
 
+        // Verifica se 'prefixo' aparece no INÍCIO de uma palavra dentro de cLow
+        // (evita falsos positivos como "Nível" casando com "vel", ou "Velocidade" casando com "loc")
+        function colunaComecaCom(cLow, prefixo) {
+            var idx = cLow.indexOf(prefixo);
+            if (idx === -1) return false;
+            if (idx === 0) return true;
+            var charAntes = cLow.charAt(idx - 1);
+            return !/[a-zà-ÿ]/i.test(charAntes);
+        }
+
         function mapearColunasExcel(cabecalhos) {
-            colunasMapeadas = { lat: null, lon: null, velocidade: null, dataHora: null, city: null };
+            colunasMapeadas = { lat: null, lon: null, velocidade: null, dataHora: null, city: null, dataCol: null, horaCol: null };
             let melhorMatchCidade = 0;
 
             cabecalhos.forEach(c => {
                 var cLow = c.toLowerCase().trim();
                 if (cLow.includes('lat')) colunasMapeadas.lat = c;
                 if (cLow.includes('lon') || cLow.includes('lng')) colunasMapeadas.lon = c;
-                if (cLow.includes('vel') || cLow.includes('speed')) colunasMapeadas.velocidade = c;
+                if (colunaComecaCom(cLow, 'vel') || colunaComecaCom(cLow, 'speed')) colunasMapeadas.velocidade = c;
                 if (cLow.includes('dat') || cLow.includes('hor')) colunasMapeadas.dataHora = c;
+
+                // Detecta planilhas (ex: RelatAnalitico) que separam Data e Hora em colunas distintas
+                if (cLow.includes('dat') && !cLow.includes('hor')) colunasMapeadas.dataCol = c;
+                if (cLow.includes('hor') && !cLow.includes('dat')) colunasMapeadas.horaCol = c;
                 
                 if (cLow === 'cidade' || cLow === 'municipio' || cLow === 'referencia' || cLow === 'referência') {
                     colunasMapeadas.cidade = c;
                     melhorMatchCidade = 4;
-                } else if ((cLow.includes('ref') || cLow.includes('cid') || cLow.includes('mun')) && melhorMatchCidade < 3) {
+                } else if ((colunaComecaCom(cLow, 'ref') || colunaComecaCom(cLow, 'cid') || colunaComecaCom(cLow, 'mun')) && melhorMatchCidade < 3) {
                     colunasMapeadas.cidade = c;
                     melhorMatchCidade = 3;
-                } else if (cLow.includes('loc') && melhorMatchCidade < 2) {
+                } else if (colunaComecaCom(cLow, 'loc') && melhorMatchCidade < 2) {
                     colunasMapeadas.cidade = c;
                     melhorMatchCidade = 2;
                 }
@@ -661,6 +675,65 @@
             if (!colunasMapeadas.dataHora) colunasMapeadas.dataHora = cabecalhos[3];
 
             printLog(`Colunas Carregadas: Lat: ${colunasMapeadas.lat} | Lon: ${colunasMapeadas.lon}`);
+        }
+
+        // Converte diferentes formatos de coordenada para decimal:
+        // - Decimal padrão com ponto: -23.7293 (ex: Grid)
+        // - Decimal com vírgula: -27,6858 (ex: RelatAnalitico)
+        // - Graus/Minutos/Segundos com hemisfério: 15° 43' 18'' Sul (ex: ExportedReport)
+        function converterCoordenadaParaDecimal(valor) {
+            if (valor === null || valor === undefined || valor === "") return NaN;
+            if (typeof valor === 'number') return valor;
+
+            var str = String(valor).trim();
+
+            var dms = str.match(/(-?\d+(?:[.,]\d+)?)\s*°\s*(\d+(?:[.,]\d+)?)\s*'\s*(\d+(?:[.,]\d+)?)\s*''?\s*([A-Za-zÀ-ÿ]+)/);
+            if (dms) {
+                var graus = parseFloat(dms[1].replace(',', '.'));
+                var minutos = parseFloat(dms[2].replace(',', '.'));
+                var segundos = parseFloat(dms[3].replace(',', '.'));
+                var hemisferio = dms[4].trim().toLowerCase();
+                var decimal = Math.abs(graus) + (minutos / 60) + (segundos / 3600);
+                if (hemisferio.indexOf('s') === 0 || hemisferio.indexOf('o') === 0 || hemisferio.indexOf('w') === 0) decimal = -decimal;
+                return decimal;
+            }
+
+            if (/^-?\d+,\d+$/.test(str)) {
+                return parseFloat(str.replace(',', '.'));
+            }
+
+            return parseFloat(str);
+        }
+
+        // Obtém o valor de Data/Hora de uma linha, combinando colunas separadas
+        // (ex: RelatAnalitico com colunas "Data" e "Hora" distintas) quando aplicável.
+        // Se não houver separação real, mantém o comportamento original (linha[colunasMapeadas.dataHora]).
+        function obterDataHoraBruta(linha) {
+            var temColunasSeparadas = colunasMapeadas.dataCol && colunasMapeadas.horaCol && colunasMapeadas.dataCol !== colunasMapeadas.horaCol;
+            if (temColunasSeparadas) {
+                var valData = linha[colunasMapeadas.dataCol];
+                var valHora = linha[colunasMapeadas.horaCol];
+
+                var dataEhData = valData instanceof Date && !isNaN(valData.getTime());
+                var horaEhData = valHora instanceof Date && !isNaN(valHora.getTime());
+
+                if (dataEhData && horaEhData) {
+                    // Se ambas já carregam o mesmo instante completo (comum quando a origem
+                    // apenas formata a mesma célula como data e como hora), usa a mais completa.
+                    if (valData.getTime() === valHora.getTime()) return valData;
+
+                    // Caso contrário, combina a data de uma com a hora da outra.
+                    var combinada = new Date(valData.getFullYear(), valData.getMonth(), valData.getDate(),
+                        valHora.getHours(), valHora.getMinutes(), valHora.getSeconds());
+                    return combinada;
+                }
+
+                if (valData !== "" && valHora !== "") {
+                    return String(valData).trim() + " " + String(valHora).trim();
+                }
+            }
+
+            return linha[colunasMapeadas.dataHora];
         }
 
         function executarCruzamentoAssincrono() {
@@ -710,8 +783,8 @@
                 
                 for (; index < fim; index++) {
                     var linha = dadosTelemetriaBrutos[index];
-                    var lat = parseFloat(linha[cLat]);
-                    var lon = parseFloat(linha[cLon]);
+                    var lat = converterCoordenadaParaDecimal(linha[cLat]);
+                    var lon = converterCoordenadaParaDecimal(linha[cLon]);
                     var velReg = parseFloat(linha[cVel]);
 
                     if (isNaN(lat) || isNaN(lon)) continue;
@@ -738,7 +811,7 @@
                         });
                     }
 
-                    var dataHoraFormatada = formatarDataHora(linha[cTime]);
+                    var dataHoraFormatada = formatarDataHora(obterDataHoraBruta(linha));
                     
                     // Extrai o limite cartográfico original da via (padrão 60 se não houver malha)
                     var velMaxViaOriginal = viaIdentificada ? extrairVelocidadeNumerica(viaIdentificada.properties.maxspeed) : 60;
