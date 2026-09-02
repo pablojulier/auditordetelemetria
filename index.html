@@ -167,6 +167,19 @@
             pointer-events: none;
             white-space: nowrap;
         }
+        /* Destaque de cruzamento: excesso de velocidade dentro de Área de Risco histórica (300m) */
+        .custom-marker-dot.risco-destaque {
+            box-shadow: 0 0 0 3px rgba(249,115,22,0.95), 0 1px 3px rgba(0,0,0,0.3);
+            border: 1px solid #7c2d12 !important;
+        }
+        .risco-area-legend-swatch {
+            width: 12px; height: 12px; border-radius: 50%;
+            background: #f97316; border: 1px solid #7c2d12;
+        }
+        .risco-cruzamento-legend-swatch {
+            width: 12px; height: 12px; border-radius: 50%;
+            background: var(--excesso-medio); box-shadow: 0 0 0 2px #f97316; border: 1px solid #7c2d12;
+        }
         #bottom-panel.painel-expandido #table-container {
     display: none !important;
         }
@@ -181,7 +194,7 @@
 <body>
 
     <header>
-        <h1>🚗 Auditor de Telemetria V30.3 </h1>
+        <h1>🚗 Auditor de Telemetria V30.4 </h1>
         <div style="font-size: 0.75rem; opacity: 0.85;">Mapeamento de excessos de velocidades acima do limite</div>
     </div>
     <button id="btn-sobre" style="
@@ -218,6 +231,10 @@
                 
                 <div id="status-json" class="status-badge" style="color: #2563eb;">
                     ⏳ Conectando ao repositório GitHub...
+                </div>
+
+                <div id="status-datatran" class="status-badge" style="color: #2563eb; margin-top: 4px;">
+                    ⏳ Conectando à base histórica de acidentes (PRF)...
                 </div>
                             
             </div>
@@ -283,6 +300,10 @@
                         <label style="cursor:pointer; font-weight: bold;" for="chk-ativar-clima">🌤️ Obter Clima Ocorrências (API)</label>
                         <input type="checkbox" id="chk-ativar-clima" style="transform: scale(1.1);" onchange="alternarModuloClimaOcorrencias()">
                     </div>
+                    <div class="toggle-row" style="color: #9a3412; background: #fff7ed; padding: 6px; border-radius: 4px; border: 1px solid #fed7aa; margin-bottom: 4px;">
+                        <label style="cursor:pointer; font-weight: bold;" for="chk-historico-risco">🚧 HISTÓRICO DE RISCO <span class="help-icon" onclick="abrirAjuda('historico-risco')">?</span></label>
+                        <input type="checkbox" id="chk-historico-risco" style="transform: scale(1.2);" onchange="alternarHistoricoRisco()">
+                    </div>
                     
                     <div class="config-row">
                         <label>Margem de Tolerância: <span class="help-icon" onclick="abrirAjuda('tolerancia')">?</span></label>
@@ -325,6 +346,15 @@
                         <button id="btn-crit-prox" class="btn-acao btn-critico" onclick="pularCritico(1)" disabled>Crítico ▶</button>
                     </div>
                 </div>
+
+                <div class="nav-box" id="nav-box-risco" style="border-color:#fdba74; background:#fff7ed; display:none;">
+                    <div style="font-size:0.7rem; font-weight:bold; color:#9a3412;">🚧 Excesso em Área de Risco (raio 300m):</div>
+                    <div class="nav-row">
+                        <button id="btn-risco-ant" class="btn-acao" style="background:#ea580c;" onclick="pularAreaRisco(-1)" disabled>◀ Risco</button>
+                        <span id="nav-risco-contador" style="font-size:0.72rem; font-weight:bold; color:#9a3412;">0 / 0</span>
+                        <button id="btn-risco-prox" class="btn-acao" style="background:#ea580c;" onclick="pularAreaRisco(1)" disabled>Risco ▶</button>
+                    </div>
+                </div>
             </div>
 
             <div id="console-log">Pronto para operação.</div>
@@ -338,6 +368,8 @@
                     <div class="legend-item"><span class="legend-color" style="background:var(--excesso-baixo);"></span> Excesso > 10%</div>
                     <div class="legend-item"><span class="legend-color" style="background:var(--excesso-medio);"></span> Excesso > 20%</div>
                     <div class="legend-item"><span class="legend-color" style="background:var(--excesso-alto);"></span> Crítico ≥ 50%</div>
+                    <div class="legend-item" id="legenda-area-risco" style="display:none;"><span class="risco-area-legend-swatch"></span> Área de Risco Histórica (PRF)</div>
+                    <div class="legend-item" id="legenda-cruzamento-risco" style="display:none;"><span class="risco-cruzamento-legend-swatch"></span> Excesso em Área de Risco</div>
                     
                     <div id="weather-legend">
                         <div style="margin-bottom: 2px; text-decoration: underline;">Condições na Rota:</div>
@@ -456,8 +488,255 @@
             
             if (dadosTelemetriaBrutos.length > 0) executarCruzamentoAssincrono();
         }
-        var map, camadaExcedentes, camadaNormais, camadaTrajeto, graficoInstancia;
+        var map, camadaExcedentes, camadaNormais, camadaTrajeto, camadaAreasRisco, graficoInstancia;
         var baseViasSegmentadas = []; 
+        var baseHistoricoRiscos = []; // {lat, lon, causa, tipo, municipio, data}
+        var listaDeExcessosEmAreaRisco = []; // excessos que cruzam com uma área de risco (300m)
+        var indiceRiscoAtual = -1;
+        var bboxTelemetriaAtual = null; // extensão geográfica da telemetria carregada
+
+        // ---------------------------------------------------------------
+// HISTÓRICO DE RISCO (PRF) - Carregamento e utilitários
+// ---------------------------------------------------------------
+function parseLinhaCSV(linha, delimitador) {
+    delimitador = delimitador || ';';
+    var campos = [];
+    var atual = '';
+    var dentroAspas = false;
+    for (var i = 0; i < linha.length; i++) {
+        var c = linha[i];
+        if (c === '"') {
+            dentroAspas = !dentroAspas;
+        } else if (c === delimitador && !dentroAspas) {
+            campos.push(atual);
+            atual = '';
+        } else {
+            atual += c;
+        }
+    }
+    campos.push(atual);
+    return campos;
+}
+
+async function carregarHistoricoRiscoAutomaticamente() {
+    var statusEl = document.getElementById('status-datatran');
+    printLog("Iniciando importação do histórico de acidentes (PRF) do GitHub...");
+    if (statusEl) {
+        statusEl.innerText = "⏳ Baixando histórico de acidentes (PRF)...";
+        statusEl.style.color = "#2563eb";
+    }
+
+    try {
+        // 1. Busca a lista de arquivos do repositório
+        var resRepo = await fetch("https://api.github.com/repos/pablojulier/dadoshistoricosPRF/contents/");
+        if (!resRepo.ok) throw new Error("HTTP " + resRepo.status);
+        var itens = await resRepo.json();
+
+        // 2. Filtra todos os arquivos que terminam com .csv
+        var arquivosCsv = itens.filter(item => item.type === "file" && item.name.toLowerCase().endsWith('.csv'));
+        if (arquivosCsv.length === 0) throw new Error("Nenhum CSV encontrado");
+
+        var contador = 0;
+
+        // 3. Itera e processa cada arquivo CSV automaticamente
+        for (var file of arquivosCsv) {
+            var resposta = await fetch(file.download_url);
+            if (!resposta.ok) continue;
+
+            var buffer = await resposta.arrayBuffer();
+            var decodificador = new TextDecoder('iso-8859-1');
+            var texto = decodificador.decode(buffer);
+
+            var linhas = texto.split(/\r\n|\n/);
+            if (linhas.length === 0) continue;
+
+            var cabecalho = parseLinhaCSV(linhas[0]).map(h => h.trim().toLowerCase());
+            var idxLat = cabecalho.indexOf('latitude');
+            var idxLon = cabecalho.indexOf('longitude');
+            var idxCausa = cabecalho.indexOf('causa_acidente');
+            var idxTipo = cabecalho.indexOf('tipo_acidente');
+            var idxMunicipio = cabecalho.indexOf('municipio');
+            var idxData = cabecalho.indexOf('data_inversa');
+            var idxHorario = cabecalho.indexOf('horario');
+
+            if (idxLat === -1 || idxLon === -1 || idxCausa === -1) continue;
+
+            for (var i = 1; i < linhas.length; i++) {
+                var linha = linhas[i];
+                if (!linha) continue;
+                var campos = parseLinhaCSV(linha);
+                if (campos.length <= Math.max(idxLat, idxLon, idxCausa)) continue;
+
+                var latStr = campos[idxLat];
+                var lonStr = campos[idxLon];
+                if (!latStr || !lonStr) continue;
+
+                var lat = parseFloat(String(latStr).replace(',', '.'));
+                var lon = parseFloat(String(lonStr).replace(',', '.'));
+                if (isNaN(lat) || isNaN(lon)) continue;
+
+                baseHistoricoRiscos.push({
+                    lat: lat,
+                    lon: lon,
+                    causa: (idxCausa > -1 && campos[idxCausa]) ? campos[idxCausa].trim() : "Causa não informada",
+                    tipo: (idxTipo > -1 && campos[idxTipo]) ? campos[idxTipo].trim() : "",
+                    municipio: (idxMunicipio > -1 && campos[idxMunicipio]) ? campos[idxMunicipio].trim() : "",
+                    data: (idxData > -1 && campos[idxData]) ? campos[idxData].trim() : "",
+                    horario: (idxHorario > -1 && campos[idxHorario]) ? campos[idxHorario].trim() : ""
+                });
+                contador++;
+            }
+        }
+
+        if (statusEl) {
+            statusEl.innerText = `✅ ${contador.toLocaleString('pt-BR')} linhas importadas (Histórico PRF)`;
+            statusEl.style.color = "#16a34a";
+            statusEl.style.background = "#f0fdf4";
+            statusEl.style.borderColor = "#bbf7d0";
+        }
+        printLog(`Histórico de acidentes pronto. Registros em cache: ${contador.toLocaleString('pt-BR')}`);
+
+        if (listaDeExcessosOcorridos.length > 0 && document.getElementById('chk-historico-risco').checked) {
+            alternarHistoricoRisco();
+        }
+    } catch (err) {
+        console.error("Erro ao carregar histórico de acidentes (PRF):", err);
+        if (statusEl) {
+            statusEl.innerText = "❌ Falha ao importar histórico de acidentes (PRF)";
+            statusEl.style.color = "#dc2626";
+            statusEl.style.background = "#fef2f2";
+            statusEl.style.borderColor = "#fecaca";
+        }
+        printLog("Falha ao conectar na base de histórico de acidentes (PRF).", true);
+    }
+}
+
+        // Distância em metros entre dois pontos (Haversine)
+        function distanciaMetros(lat1, lon1, lat2, lon2) {
+            var R = 6371000;
+            var dLat = (lat2 - lat1) * Math.PI / 180;
+            var dLon = (lon2 - lon1) * Math.PI / 180;
+            var a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+            var c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+            return R * c;
+        }
+
+        // Busca ocorrências históricas da PRF num raio (metros) ao redor de um ponto
+        function buscarHistoricoRiscoProximo(lat, lon, raioMetros) {
+            raioMetros = raioMetros || 300;
+            var margemGraus = 0.0015; // pré-filtro grosseiro (~150m) antes do cálculo exato
+            var encontrados = [];
+            for (var i = 0; i < baseHistoricoRiscos.length; i++) {
+                var reg = baseHistoricoRiscos[i];
+                if (Math.abs(reg.lat - lat) > margemGraus || Math.abs(reg.lon - lon) > margemGraus) continue;
+                var d = distanciaMetros(lat, lon, reg.lat, reg.lon);
+                if (d <= raioMetros) {
+                    reg._distancia = d;
+                    encontrados.push(reg);
+                }
+            }
+            encontrados.sort((a, b) => a._distancia - b._distancia);
+            return encontrados;
+        }
+
+        // Plota no mapa as Áreas de Risco históricas da PRF, mesmo em pontos onde o GPS não passou.
+        // Restringe a busca à extensão geográfica da telemetria carregada (+ margem) por performance.
+        function renderizarAreasRiscoNoMapa(ativo) {
+            if (!camadaAreasRisco) return;
+            camadaAreasRisco.clearLayers();
+            if (map.hasLayer(camadaAreasRisco)) map.removeLayer(camadaAreasRisco);
+
+            if (!ativo || !bboxTelemetriaAtual || baseHistoricoRiscos.length === 0) return;
+
+            var margemGraus = 0.05; // ~5,5 km de folga além da rota percorrida
+            var minLat = bboxTelemetriaAtual.minLat - margemGraus;
+            var maxLat = bboxTelemetriaAtual.maxLat + margemGraus;
+            var minLon = bboxTelemetriaAtual.minLon - margemGraus;
+            var maxLon = bboxTelemetriaAtual.maxLon + margemGraus;
+
+            var LIMITE_MARCADORES = 4000; // proteção de performance para regiões muito extensas
+            var totalPlotados = 0;
+
+            for (var i = 0; i < baseHistoricoRiscos.length; i++) {
+                var reg = baseHistoricoRiscos[i];
+                if (reg.lat < minLat || reg.lat > maxLat || reg.lon < minLon || reg.lon > maxLon) continue;
+
+                var ptoRisco = L.circleMarker([reg.lat, reg.lon], {
+                    radius: 5,
+                    color: "#7c2d12",
+                    weight: 1,
+                    fillColor: "#f97316",
+                    fillOpacity: 0.55
+                });
+
+                ptoRisco.bindPopup(`
+                    <div style="font-size:0.75rem; line-height:1.4; min-width:180px; color:#1e293b;">
+                        <b style="color:#c2410c;">🚧 Área de Risco (Histórico PRF)</b><br>
+                        <b>⚠️ Causa:</b> ${reg.causa}<br>
+                        ${reg.tipo ? `<b>💥 Tipo de Acidente:</b> ${reg.tipo}<br>` : ''}
+                        ${reg.municipio ? `<b>🏙️ Município:</b> ${reg.municipio}<br>` : ''}
+                        ${reg.data ? `<b>📅 Data:</b> ${reg.data}${reg.horario ? ' às ' + reg.horario : ''}<br>` : ''}
+                    </div>
+                `);
+
+                camadaAreasRisco.addLayer(ptoRisco);
+                totalPlotados++;
+                if (totalPlotados >= LIMITE_MARCADORES) break;
+            }
+
+            map.addLayer(camadaAreasRisco);
+            printLog(`Áreas de risco históricas plotadas no mapa: ${totalPlotados.toLocaleString('pt-BR')}`);
+        }
+
+        // Função orquestradora: liga/desliga o módulo HISTÓRICO DE RISCO.
+        // - Recalcula quais excessos de velocidade cruzam com uma Área de Risco (raio 300m)
+        // - Atualiza pop-ups e destaque visual dos marcadores de excesso
+        // - Plota (ou remove) as Áreas de Risco históricas no mapa, mesmo sem passagem do GPS
+        // - Atualiza legenda e caixa de navegação dedicada
+        function alternarHistoricoRisco() {
+            var chk = document.getElementById('chk-historico-risco');
+            var ativo = !!(chk && chk.checked);
+
+            listaDeExcessosEmAreaRisco = [];
+            listaDeExcessosOcorridos.forEach((exc) => {
+                if (ativo) {
+                    var proximos = buscarHistoricoRiscoProximo(exc.lat, exc.lon, 100);
+                    exc.temAreaRisco = proximos.length > 0;
+                    if (exc.temAreaRisco) listaDeExcessosEmAreaRisco.push(exc);
+                } else {
+                    exc.temAreaRisco = false;
+                }
+            });
+            indiceRiscoAtual = listaDeExcessosEmAreaRisco.length > 0 ? 0 : -1;
+
+            listaDeExcessosOcorridos.forEach((exc) => atualizarVisualMarcadorClima(exc));
+
+            renderizarAreasRiscoNoMapa(ativo);
+
+            var legRisco = document.getElementById('legenda-area-risco');
+            var legCruzamento = document.getElementById('legenda-cruzamento-risco');
+            if (legRisco) legRisco.style.display = ativo ? 'flex' : 'none';
+            if (legCruzamento) legCruzamento.style.display = ativo ? 'flex' : 'none';
+
+            var navBoxRisco = document.getElementById('nav-box-risco');
+            if (navBoxRisco) navBoxRisco.style.display = ativo ? 'block' : 'none';
+
+            atualizarBotoesNavegacao();
+        }
+
+        // Navega entre os pontos onde houve excesso de velocidade DENTRO de uma Área de Risco (300m)
+        function pularAreaRisco(dir) {
+            var nIdx = indiceRiscoAtual + dir;
+            if (nIdx >= 0 && nIdx < listaDeExcessosEmAreaRisco.length) {
+                indiceRiscoAtual = nIdx;
+                var item = listaDeExcessosEmAreaRisco[nIdx];
+                var globalIdx = listaDeExcessosOcorridos.indexOf(item);
+                if (globalIdx > -1) focarPontoGeral(globalIdx);
+            }
+        }
+        
         var dadosTelemetriaBrutos = [];
         var listaDeExcessosOcorridos = [];
         var listaDeExcessosCriticos = []; 
@@ -498,6 +777,7 @@
             camadaTrajeto = L.layerGroup().addTo(map);
             camadaNormais = L.layerGroup().addTo(map);
             camadaExcedentes = L.layerGroup().addTo(map);
+            camadaAreasRisco = L.layerGroup(); // só é adicionada ao mapa quando "HISTÓRICO DE RISCO" está ativo
 
             // Mantém a escuta dos botões de drop manuais ativada
             configurarZonasDeUpload();
@@ -505,6 +785,7 @@
 
             // 🚀 DISPARA O DOWNLOAD DO GITHUB AUTOMATICAMENTE AQUI
             carregarViasAutomaticamente();
+            carregarHistoricoRiscoAutomaticamente();
 
             document.getElementById('chk-normais').addEventListener('change', function(e) {
                 if (e.target.checked) map.addLayer(camadaNormais);
@@ -537,6 +818,9 @@
             } else if (tipo === 'tolerancia') {
                 t.innerText = "📏 Margem de Tolerância Aceitável (km/h)";
                 txt.innerText = "Estipula uma margem de segurança idêntica à utilizada pela legislação de trânsito (Padrão: 7 km/h).";
+            } else if (tipo === 'historico-risco') {
+                t.innerText = "🚧 Histórico de Risco";
+                txt.innerText = "Quando habilitado, cada ponto de excesso de velocidade é cruzado com a base histórica de acidentes da PRF (importada do GitHub). Se houver algum acidente registrado em um raio de 300 metros do ponto de GPS, o pop-up do marcador exibirá a Área de Risco e a(s) causa(s) do(s) acidente(s) próximo(s).";
             }
             m.style.display = 'flex';
         }
@@ -742,12 +1026,15 @@
             camadaTrajeto.clearLayers();
             camadaNormais.clearLayers();
             camadaExcedentes.clearLayers();
+            camadaAreasRisco.clearLayers();
             
             listaDeExcessosOcorridos = [];
             listaDeExcessosCriticos = [];
+            listaDeExcessosEmAreaRisco = [];
             historicoLinhaGrafico = [];
             indiceGeralAtual = -1;
             indiceCriticoAtual = -1;
+            indiceRiscoAtual = -1;
 
             var pBloco = document.getElementById('progresso-bloco');
             var pBarra = document.getElementById('progresso-barra');
@@ -932,6 +1219,17 @@
                         var polylineTrajeto = L.polyline(vetorCoordenadasTrajeto, { color: '#2563eb', weight: 3, opacity: 0.75, dashArray: '4, 6' });
                         camadaTrajeto.addLayer(polylineTrajeto);
                         map.fitBounds(polylineTrajeto.getBounds(), { padding: [20, 20] });
+
+                        var latsTraj = vetorCoordenadasTrajeto.map(p => p[0]);
+                        var lonsTraj = vetorCoordenadasTrajeto.map(p => p[1]);
+                        bboxTelemetriaAtual = {
+                            minLat: Math.min.apply(null, latsTraj),
+                            maxLat: Math.max.apply(null, latsTraj),
+                            minLon: Math.min.apply(null, lonsTraj),
+                            maxLon: Math.max.apply(null, lonsTraj)
+                        };
+                    } else {
+                        bboxTelemetriaAtual = null;
                     }
 
                     renderizarGraficoLinhaContinuo();
@@ -949,6 +1247,7 @@
                     }
                     if (listaDeExcessosCriticos.length > 0) indiceCriticoAtual = 0;
                     
+                    alternarHistoricoRisco();
                     atualizarBotoesNavegacao();
                     printLog("Análise processada com filtros ativos.");
                 }
@@ -1005,7 +1304,7 @@
 
             var htmlElemento = `
                 <div class="custom-marker-wrapper" id="marker-wrapper-${dados.uid}">
-                    <div class="custom-marker-dot" style="background: ${cor};"></div>
+                    <div class="custom-marker-dot${dados.temAreaRisco ? ' risco-destaque' : ''}" style="background: ${cor};"></div>
                     <div class="custom-marker-weather">${exibirEmojiStr}</div>
                 </div>
             `;
@@ -1034,6 +1333,36 @@
                 infoClimaPopup = `<b>🌤️ Tempo Local:</b> ${dados.clima} (${dados.climaTexto})<br>`;
             }
 
+            // --- HISTÓRICO DE RISCO (PRF) - raio de 300m em pontos com excesso de velocidade ---
+            var infoHistoricoRiscoPopup = "";
+            var chkHistoricoRisco = document.getElementById('chk-historico-risco');
+            if (ehExcesso && chkHistoricoRisco && chkHistoricoRisco.checked) {
+                var riscosProximos = buscarHistoricoRiscoProximo(dados.lat, dados.lon, 100);
+                if (riscosProximos.length > 0) {
+                    var contagemCausas = {};
+                    riscosProximos.forEach(r => {
+                        var causa = r.causa || "Causa não informada";
+                        contagemCausas[causa] = (contagemCausas[causa] || 0) + 1;
+                    });
+                    var listaCausasHtml = Object.keys(contagemCausas)
+                        .sort((a, b) => contagemCausas[b] - contagemCausas[a])
+                        .map(c => `&nbsp;&nbsp;• ${c} (${contagemCausas[c]}x)`)
+                        .join('<br>');
+
+                    infoHistoricoRiscoPopup = `
+                        <hr style="margin:4px 0; border:none; border-top:1px dashed #f97316;">
+                        <b style="color:#c2410c;">🚧 Área de Risco (raio 300m)</b><br>
+                        <span style="font-size:0.7rem;">${riscosProximos.length} acidente(s) histórico(s) da PRF neste ponto:</span><br>
+                        <span style="font-size:0.7rem;">${listaCausasHtml}</span><br>
+                    `;
+                } else {
+                    infoHistoricoRiscoPopup = `
+                        <hr style="margin:4px 0; border:none; border-top:1px dashed #cbd5e1;">
+                        <span style="font-size:0.7rem; color:#64748b;">🚧 Sem histórico de acidentes da PRF em 300m.</span><br>
+                    `;
+                }
+            }
+
             var htmlPopup = `
                 <div style="font-size:0.75rem; line-height:1.4; min-width:180px; color: #1e293b;">
                     <b style="color:${cor};">${ehExcesso ? "⚠️ Limite Violado" : "✅ Velocidade Regular"}</b><br>
@@ -1045,6 +1374,7 @@
                     <b>⛔ Limite Avaliado:</b> ${dados.velMaxVia} km/h<br>
                     <b>🚀 Registrado:</b> <span style="font-weight:bold; color:red;">${dados.velReg} km/h</span><br>
                     ${ehExcesso ? `<b>📈 Percentual:</b> +${pct.toFixed(1)}%<br>` : ''}
+                    ${infoHistoricoRiscoPopup}
                     <a href="${URLGoogleMaps}" target="_blank" class="gmaps-link">📍 Abrir no Google Maps</a>
                 </div>
             `;
@@ -1472,10 +1802,15 @@ function obterSimboloClimaOpenMeteo(code, isDay) {
             if (containerMarcador) {
                 var elWeather = containerMarcador.querySelector('.custom-marker-weather');
                 if (elWeather) elWeather.innerText = emojiClima;
+                var elDot = containerMarcador.querySelector('.custom-marker-dot');
+                if (elDot) {
+                    elDot.style.background = cor;
+                    elDot.classList.toggle('risco-destaque', !!exc.temAreaRisco);
+                }
             } else {
                 var htmlElemento = `
                     <div class="custom-marker-wrapper" id="marker-wrapper-${exc.uid}">
-                        <div class="custom-marker-dot" style="background: ${cor};"></div>
+                        <div class="custom-marker-dot${exc.temAreaRisco ? ' risco-destaque' : ''}" style="background: ${cor};"></div>
                         <div class="custom-marker-weather">${emojiClima}</div>
                     </div>
                 `;
@@ -1629,6 +1964,15 @@ function obterSimboloClimaOpenMeteo(code, isDay) {
             document.getElementById('btn-crit-ant').disabled = (indiceCriticoAtual <= 0);
             document.getElementById('btn-crit-prox').disabled = (indiceCriticoAtual === -1 || indiceCriticoAtual >= listaDeExcessosCriticos.length - 1);
             document.getElementById('nav-crit-contador').innerText = `${listaDeExcessosCriticos.length === 0 ? 0 : indiceCriticoAtual + 1} / ${listaDeExcessosCriticos.length}`;
+
+            var btnRiscoAnt = document.getElementById('btn-risco-ant');
+            var btnRiscoProx = document.getElementById('btn-risco-prox');
+            var navRiscoContador = document.getElementById('nav-risco-contador');
+            if (btnRiscoAnt && btnRiscoProx && navRiscoContador) {
+                btnRiscoAnt.disabled = (indiceRiscoAtual <= 0);
+                btnRiscoProx.disabled = (indiceRiscoAtual === -1 || indiceRiscoAtual >= listaDeExcessosEmAreaRisco.length - 1);
+                navRiscoContador.innerText = `${listaDeExcessosEmAreaRisco.length === 0 ? 0 : indiceRiscoAtual + 1} / ${listaDeExcessosEmAreaRisco.length}`;
+            }
         }
 
         function focarPontoGeral(idx) {
@@ -1682,6 +2026,12 @@ function obterSimboloClimaOpenMeteo(code, isDay) {
                 listaDeExcessosCriticos.splice(idxCritico, 1);
             }
 
+            // 3b. Remove do Array de Cruzamentos com Área de Risco (se fizer parte)
+            var idxRisco = listaDeExcessosEmAreaRisco.indexOf(item);
+            if (idxRisco > -1) {
+                listaDeExcessosEmAreaRisco.splice(idxRisco, 1);
+            }
+
             // 4. Atualiza os Totalizadores visuais (O gráfico permanece intacto propositalmente)
             document.getElementById('m-total-excessos').innerText = listaDeExcessosOcorridos.length;
 
@@ -1691,6 +2041,9 @@ function obterSimboloClimaOpenMeteo(code, isDay) {
             }
             if (indiceCriticoAtual >= listaDeExcessosCriticos.length) {
                 indiceCriticoAtual = Math.max(0, listaDeExcessosCriticos.length - 1);
+            }
+            if (indiceRiscoAtual >= listaDeExcessosEmAreaRisco.length) {
+                indiceRiscoAtual = Math.max(0, listaDeExcessosEmAreaRisco.length - 1);
             }
 
             // 6. Recria a tabela limpa (atualizando os Data-IDs para não quebrar interações)
