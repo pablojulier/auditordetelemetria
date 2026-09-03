@@ -170,11 +170,11 @@
         /* Destaque de cruzamento: excesso de velocidade dentro de Área de Risco histórica (300m) */
         .custom-marker-dot.risco-destaque {
             box-shadow: 0 0 0 3px rgba(249,115,22,0.95), 0 1px 3px rgba(0,0,0,0.3);
-            border: 1px solid #7c2d12 !important;
+            border: 1px solid #95b6fc !important;
         }
         .risco-area-legend-swatch {
             width: 12px; height: 12px; border-radius: 50%;
-            background: #f97316; border: 1px solid #7c2d12;
+            background: #95b6fc; border: 1px solid #441809;
         }
         .risco-cruzamento-legend-swatch {
             width: 12px; height: 12px; border-radius: 50%;
@@ -194,7 +194,7 @@
 <body>
 
     <header>
-        <h1>🚗 Auditor de Telemetria V30.4 </h1>
+        <h1>🚗 Auditor de Telemetria V30.5 </h1>
         <div style="font-size: 0.75rem; opacity: 0.85;">Mapeamento de excessos de velocidades acima do limite</div>
     </div>
     <button id="btn-sobre" style="
@@ -667,7 +667,7 @@ async function carregarHistoricoRiscoAutomaticamente() {
                     radius: 5,
                     color: "#7c2d12",
                     weight: 1,
-                    fillColor: "#f97316",
+                    fillColor: "#95b6fc",
                     fillOpacity: 0.55
                 });
 
@@ -728,14 +728,19 @@ async function carregarHistoricoRiscoAutomaticamente() {
 
         // Navega entre os pontos onde houve excesso de velocidade DENTRO de uma Área de Risco (300m)
         function pularAreaRisco(dir) {
-            var nIdx = indiceRiscoAtual + dir;
-            if (nIdx >= 0 && nIdx < listaDeExcessosEmAreaRisco.length) {
-                indiceRiscoAtual = nIdx;
-                var item = listaDeExcessosEmAreaRisco[nIdx];
-                var globalIdx = listaDeExcessosOcorridos.indexOf(item);
-                if (globalIdx > -1) focarPontoGeral(globalIdx);
-            }
-        }
+    var total = listaDeExcessosEmAreaRisco.length;
+    if (total === 0) return;
+
+    // Navegação circular (funciona para 1 ou N itens)
+    indiceRiscoAtual = (indiceRiscoAtual + dir + total) % total;
+
+    var item = listaDeExcessosEmAreaRisco[indiceRiscoAtual];
+    var globalIdx = listaDeExcessosOcorridos.indexOf(item);
+    
+    if (globalIdx > -1) {
+        focarPontoGeral(globalIdx);
+    }
+}
         
         var dadosTelemetriaBrutos = [];
         var listaDeExcessosOcorridos = [];
@@ -1350,7 +1355,7 @@ async function carregarHistoricoRiscoAutomaticamente() {
                         .join('<br>');
 
                     infoHistoricoRiscoPopup = `
-                        <hr style="margin:4px 0; border:none; border-top:1px dashed #f97316;">
+                        <hr style="margin:4px 0; border:none; border-top:1px dashed #95b6fc;">
                         <b style="color:#c2410c;">🚧 Área de Risco (raio 300m)</b><br>
                         <span style="font-size:0.7rem;">${riscosProximos.length} acidente(s) histórico(s) da PRF neste ponto:</span><br>
                         <span style="font-size:0.7rem;">${listaCausasHtml}</span><br>
@@ -1966,13 +1971,21 @@ function obterSimboloClimaOpenMeteo(code, isDay) {
             document.getElementById('nav-crit-contador').innerText = `${listaDeExcessosCriticos.length === 0 ? 0 : indiceCriticoAtual + 1} / ${listaDeExcessosCriticos.length}`;
 
             var btnRiscoAnt = document.getElementById('btn-risco-ant');
-            var btnRiscoProx = document.getElementById('btn-risco-prox');
-            var navRiscoContador = document.getElementById('nav-risco-contador');
-            if (btnRiscoAnt && btnRiscoProx && navRiscoContador) {
-                btnRiscoAnt.disabled = (indiceRiscoAtual <= 0);
-                btnRiscoProx.disabled = (indiceRiscoAtual === -1 || indiceRiscoAtual >= listaDeExcessosEmAreaRisco.length - 1);
-                navRiscoContador.innerText = `${listaDeExcessosEmAreaRisco.length === 0 ? 0 : indiceRiscoAtual + 1} / ${listaDeExcessosEmAreaRisco.length}`;
-            }
+var btnRiscoProx = document.getElementById('btn-risco-prox');
+var navRiscoContador = document.getElementById('nav-risco-contador');
+
+if (btnRiscoAnt && btnRiscoProx && navRiscoContador) {
+    var totalRisco = listaDeExcessosEmAreaRisco.length;
+    
+    // Desativa só se NÃO houver itens na lista
+    btnRiscoAnt.disabled = (totalRisco === 0);
+    btnRiscoProx.disabled = (totalRisco === 0);
+
+    // Exibe a contagem correta
+    navRiscoContador.innerText = totalRisco === 0 
+        ? '0 / 0' 
+        : `${indiceRiscoAtual + 1} / ${totalRisco}`;
+}
         }
 
         function focarPontoGeral(idx) {
