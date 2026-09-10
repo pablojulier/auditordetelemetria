@@ -130,6 +130,24 @@
         .help-box { background: white; padding: 20px; border-radius: 8px; max-width: 440px; width: 90%; box-shadow: 0 4px 20px rgba(0,0,0,0.25); }
 
         .map-legend { position: absolute; bottom: 15px; left: 15px; background: rgba(255, 255, 255, 0.9); padding: 8px; border-radius: 6px; box-shadow: 0 2px 8px rgba(0,0,0,0.15); z-index: 1000; font-size: 0.72rem; display: flex; flex-direction: column; gap: 4px; font-weight: bold; color: var(--text); }
+        .route-info-panel {
+            position: absolute;
+            top: 10px;
+            left: 58px;
+            z-index: 1000;
+            background: rgba(255, 255, 255, 0.96);
+            border: 1px solid #cbd5e1;
+            border-radius: 6px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+            padding: 6px 10px;
+            font-size: 0.72rem;
+            line-height: 1.55;
+            color: var(--text);
+            display: none;
+            max-width: 280px;
+        }
+        .route-info-panel .route-info-row { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .route-info-panel b { color: #0f172a; }
         .legend-item { display: flex; align-items: center; gap: 6px; }
         .legend-color { width: 12px; height: 12px; border-radius: 50%; border: 1px solid #444; }
         
@@ -194,7 +212,7 @@
 <body>
 
     <header>
-        <h1>🚗 Auditor de Telemetria V30.5 </h1>
+        <h1>🚗 Auditor de Telemetria V30.7 </h1>
         <div style="font-size: 0.75rem; opacity: 0.85;">Mapeamento de excessos de velocidades acima do limite</div>
     </div>
     <button id="btn-sobre" style="
@@ -363,6 +381,11 @@
         <div class="main-content">
             <div id="map-container">
                 <div id="map"></div>
+                <div id="route-info-panel" class="route-info-panel">
+                    <div class="route-info-row">📍 <b>Origem:</b> <span id="route-info-origem">—</span></div>
+                    <div class="route-info-row">🏁 <b>Destino:</b> <span id="route-info-destino">—</span></div>
+                    <div class="route-info-row">📏 <b>Distância percorrida:</b> <span id="route-info-distancia">—</span></div>
+                </div>
                 <div class="map-legend">
                     <div class="legend-item"><span class="legend-color" style="background:var(--vel-normal);"></span> Regularidade</div>
                     <div class="legend-item"><span class="legend-color" style="background:var(--excesso-baixo);"></span> Excesso > 10%</div>
@@ -760,7 +783,7 @@ async function carregarHistoricoRiscoAutomaticamente() {
 
         var indiceGeralAtual = -1;
         var indiceCriticoAtual = -1;
-        var colunasMapeadas = { lat: null, lon: null, velocidad: null, dataHora: null, cidade: null, dataCol: null, horaCol: null };
+        var colunasMapeadas = { lat: null, lon: null, velocidad: null, dataHora: null, cidade: null, uf: null, dataCol: null, horaCol: null };
 
         window.addEventListener('DOMContentLoaded', function() {
             var googleVias = L.tileLayer('https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}', { attribution: '© Google Maps' });
@@ -909,16 +932,73 @@ async function carregarHistoricoRiscoAutomaticamente() {
                     var dadosUint = new Uint8Array(e.target.result);
                     var workbook = XLSX.read(dadosUint, { type: 'array', cellDates: true });
                     var primeiraAba = workbook.Sheets[workbook.SheetNames[0]];
-                    var linhasJson = XLSX.utils.sheet_to_json(primeiraAba, { defval: "" });
 
-                    mapearColunasExcel(Object.keys(linhasJson[0]));
+                    // Lê a planilha como matriz bruta (array de arrays) para localizar a linha de
+                    // cabeçalho de verdade, pois alguns relatórios trazem título(s) e/ou linhas em
+                    // branco antes do cabeçalho (ex: "Relatório de Posições" na linha 1, cabeçalho na linha 4).
+                    var linhasBrutas = XLSX.utils.sheet_to_json(primeiraAba, { header: 1, defval: "" });
+                    var idxCabecalho = detectarLinhaCabecalho(linhasBrutas);
+
+                    var cabecalhosBrutos = linhasBrutas[idxCabecalho] || [];
+                    var cabecalhos = cabecalhosBrutos.map(function(h, i) {
+                        var nome = String(h === null || h === undefined ? "" : h).trim();
+                        return nome !== "" ? nome : ("Coluna" + (i + 1));
+                    });
+
+                    var linhasJson = [];
+                    for (var li = idxCabecalho + 1; li < linhasBrutas.length; li++) {
+                        var linhaArr = linhasBrutas[li];
+                        if (!linhaArr || linhaArr.every(v => v === "" || v === null || v === undefined)) continue; // pula linhas em branco
+                        var obj = {};
+                        cabecalhos.forEach(function(nomeCol, ci) {
+                            obj[nomeCol] = linhaArr[ci] !== undefined ? linhaArr[ci] : "";
+                        });
+                        linhasJson.push(obj);
+                    }
+
+                    if (linhasJson.length === 0) throw new Error("Nenhuma linha de dados encontrada após o cabeçalho.");
+
+                    mapearColunasExcel(cabecalhos);
                     dadosTelemetriaBrutos = linhasJson;
                     
                     document.getElementById('status-xlsx').innerText = `${linhasJson.length} registros`;
                     executarCruzamentoAssincrono();
-                } catch(err) { printLog("Erro ao processar telemetria.", true); }
+                } catch(err) { console.error(err); printLog("Erro ao processar telemetria.", true); }
             };
             leitor.readAsArrayBuffer(arquivo);
+        }
+
+        // Localiza, dentre as primeiras linhas da planilha, aquela que mais se parece com um
+        // cabeçalho de telemetria (contém termos como Latitude/Longitude/Velocidade/Data/Cidade).
+        // Isso permite ler tanto planilhas cujo cabeçalho já está na linha 1 quanto relatórios
+        // com título(s) e linhas em branco antes da tabela de dados.
+        function detectarLinhaCabecalho(linhasBrutas) {
+            var limite = Math.min(linhasBrutas.length, 15);
+            var melhorIdx = 0, melhorScore = -1;
+
+            for (var i = 0; i < limite; i++) {
+                var linha = linhasBrutas[i];
+                if (!linha) continue;
+                var score = 0;
+                linha.forEach(function(cel) {
+                    if (typeof cel !== 'string') return;
+                    var cLow = cel.toLowerCase().trim();
+                    if (!cLow) return;
+                    if (cLow.includes('lat')) score++;
+                    if (cLow.includes('lon') || cLow.includes('lng')) score++;
+                    if (colunaComecaCom(cLow, 'vel') || colunaComecaCom(cLow, 'speed')) score++;
+                    if (cLow.includes('dat') || cLow.includes('hor')) score++;
+                    if (cLow === 'cidade' || cLow === 'municipio' || cLow === 'referencia' || cLow === 'referência' ||
+                        colunaComecaCom(cLow, 'cid') || colunaComecaCom(cLow, 'mun') || colunaComecaCom(cLow, 'ref')) score++;
+                });
+                if (score > melhorScore) {
+                    melhorScore = score;
+                    melhorIdx = i;
+                }
+            }
+            // Exige pelo menos 2 termos reconhecidos para considerar uma linha como cabeçalho válido;
+            // caso contrário, assume a primeira linha (comportamento anterior, mais previsível).
+            return melhorScore >= 2 ? melhorIdx : 0;
         }
 
         // Verifica se 'prefixo' aparece no INÍCIO de uma palavra dentro de cLow
@@ -932,7 +1012,7 @@ async function carregarHistoricoRiscoAutomaticamente() {
         }
 
         function mapearColunasExcel(cabecalhos) {
-            colunasMapeadas = { lat: null, lon: null, velocidade: null, dataHora: null, city: null, dataCol: null, horaCol: null };
+            colunasMapeadas = { lat: null, lon: null, velocidade: null, dataHora: null, cidade: null, uf: null, dataCol: null, horaCol: null };
             let melhorMatchCidade = 0;
 
             cabecalhos.forEach(c => {
@@ -956,6 +1036,11 @@ async function carregarHistoricoRiscoAutomaticamente() {
                     colunasMapeadas.cidade = c;
                     melhorMatchCidade = 2;
                 }
+
+                // Coluna de UF/Estado (ex: "UF", "Estado", "Sigla UF") - usada para compor "Cidade/UF" sem depender de geocodificação
+                if (cLow === 'uf' || cLow === 'estado' || cLow === 'sigla uf' || cLow === 'sigla_uf') {
+                    colunasMapeadas.uf = c;
+                }
             });
 
             if (!colunasMapeadas.lat) colunasMapeadas.lat = cabecalhos[0];
@@ -963,7 +1048,7 @@ async function carregarHistoricoRiscoAutomaticamente() {
             if (!colunasMapeadas.velocidade) colunasMapeadas.velocidade = cabecalhos[2];
             if (!colunasMapeadas.dataHora) colunasMapeadas.dataHora = cabecalhos[3];
 
-            printLog(`Colunas Carregadas: Lat: ${colunasMapeadas.lat} | Lon: ${colunasMapeadas.lon}`);
+            printLog(`Colunas Carregadas: Lat: ${colunasMapeadas.lat} | Lon: ${colunasMapeadas.lon} | Vel: ${colunasMapeadas.velocidade} | Data/Hora: ${colunasMapeadas.dataHora} | Cidade: ${colunasMapeadas.cidade || '—'}${colunasMapeadas.uf ? ' | UF: ' + colunasMapeadas.uf : ''}`);
         }
 
         // Converte diferentes formatos de coordenada para decimal:
@@ -1061,9 +1146,11 @@ async function carregarHistoricoRiscoAutomaticamente() {
             var cLat = colunasMapeadas.lat, cLon = colunasMapeadas.lon;
             var cVel = colunasMapeadas.velocidade, cTime = colunasMapeadas.dataHora;
             var cCidade = colunasMapeadas.cidade;
+            var cUf = colunasMapeadas.uf;
 
             var totalPontos = dadosTelemetriaBrutos.length;
             var vetorCoordenadasTrajeto = [];
+            var pontosRotaCronologia = []; // {lat, lon, ts, horario} de todo ponto com coordenada válida
             var index = 0;
             var tamanhoLote = 350;
 
@@ -1103,7 +1190,8 @@ async function carregarHistoricoRiscoAutomaticamente() {
                         });
                     }
 
-                    var dataHoraFormatada = formatarDataHora(obterDataHoraBruta(linha));
+                    var dataHoraBrutaOriginal = obterDataHoraBruta(linha);
+                    var dataHoraFormatada = formatarDataHora(dataHoraBrutaOriginal);
                     
                     // Extrai o limite cartográfico original da via (padrão 60 se não houver malha)
                     var velMaxViaOriginal = viaIdentificada ? extrairVelocidadeNumerica(viaIdentificada.properties.maxspeed) : 60;
@@ -1127,6 +1215,16 @@ async function carregarHistoricoRiscoAutomaticamente() {
 
                     var cidadePlanilha = cCidade ? String(linha[cCidade] || "").trim() : "";
                     var cidadeFinal = cidadePlanilha || cidadeGeo || "Não Identificada";
+                    var ufPlanilha = cUf ? String(linha[cUf] || "").trim() : "";
+
+                    pontosRotaCronologia.push({
+                        lat: lat,
+                        lon: lon,
+                        ts: paraTimestampComparavel(dataHoraBrutaOriginal),
+                        horario: dataHoraFormatada,
+                        cidadeSheet: cidadePlanilha,
+                        ufSheet: ufPlanilha
+                    });
 
                     var isForaMalha = (viaFinal === "Via Fora da Malha");
                     var isSemNome = viaFinal.startsWith("Via Mapeada Sem Nome");
@@ -1236,6 +1334,27 @@ async function carregarHistoricoRiscoAutomaticamente() {
                     } else {
                         bboxTelemetriaAtual = null;
                     }
+
+                    // --- Origem / Destino / Distância percorrida da rota ---
+                    var origemPontoRota = null, destinoPontoRota = null, distanciaTotalMetrosRota = 0;
+                    if (pontosRotaCronologia.length > 0) {
+                        var pontosComTs = pontosRotaCronologia.filter(p => !isNaN(p.ts));
+                        var listaOrdenadaPorTempo = pontosComTs.length > 0
+                            ? pontosComTs.slice().sort((a, b) => a.ts - b.ts)
+                            : pontosRotaCronologia;
+                        origemPontoRota = listaOrdenadaPorTempo[0];
+                        destinoPontoRota = listaOrdenadaPorTempo[listaOrdenadaPorTempo.length - 1];
+
+                        // Soma os trechos na ORDEM REAL REGISTRADA (não a ordenada por tempo),
+                        // pois representa o traçado efetivamente percorrido pelo veículo.
+                        for (var di = 1; di < vetorCoordenadasTrajeto.length; di++) {
+                            distanciaTotalMetrosRota += distanciaMetros(
+                                vetorCoordenadasTrajeto[di - 1][0], vetorCoordenadasTrajeto[di - 1][1],
+                                vetorCoordenadasTrajeto[di][0], vetorCoordenadasTrajeto[di][1]
+                            );
+                        }
+                    }
+                    atualizarPainelRotaOrigemDestino(origemPontoRota, destinoPontoRota, distanciaTotalMetrosRota);
 
                     renderizarGraficoLinhaContinuo();
                     atualizarTabelaDOM();
@@ -1390,6 +1509,110 @@ async function carregarHistoricoRiscoAutomaticamente() {
             if (!v) return "N/A";
             if (v instanceof Date && !isNaN(v.getTime())) return v.toLocaleString('pt-BR');
             return String(v);
+        }
+
+        // Converte o valor bruto de data/hora (Date ou string em vários formatos) em timestamp
+        // numérico (ms) para permitir ordenação cronológica confiável, independente da ordem do arquivo.
+        function paraTimestampComparavel(v) {
+            if (v instanceof Date && !isNaN(v.getTime())) return v.getTime();
+            if (typeof v === 'string' && v.trim() !== '') {
+                var s = v.trim();
+                var m = s.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})[ T]?(\d{1,2})?:?(\d{1,2})?:?(\d{1,2})?/);
+                if (m) {
+                    var dia = parseInt(m[1], 10), mes = parseInt(m[2], 10), ano = parseInt(m[3], 10);
+                    if (ano < 100) ano += 2000;
+                    var hh = parseInt(m[4] || 0, 10), mm = parseInt(m[5] || 0, 10), ss = parseInt(m[6] || 0, 10);
+                    var d = new Date(ano, mes - 1, dia, hh, mm, ss);
+                    if (!isNaN(d.getTime())) return d.getTime();
+                }
+                var d2 = new Date(s);
+                if (!isNaN(d2.getTime())) return d2.getTime();
+            }
+            return NaN;
+        }
+
+        // Remove acentuação e normaliza para minúsculo (usado para casar nomes de estado com a UF)
+        function normalizarTexto(s) {
+            return String(s || "").normalize('NFD').replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+        }
+
+        var MAPA_ESTADOS_UF = {
+            "acre": "AC", "alagoas": "AL", "amapa": "AP", "amazonas": "AM", "bahia": "BA",
+            "ceara": "CE", "distrito federal": "DF", "espirito santo": "ES", "goias": "GO",
+            "maranhao": "MA", "mato grosso": "MT", "mato grosso do sul": "MS", "minas gerais": "MG",
+            "para": "PA", "paraiba": "PB", "parana": "PR", "pernambuco": "PE", "piaui": "PI",
+            "rio de janeiro": "RJ", "rio grande do norte": "RN", "rio grande do sul": "RS",
+            "rondonia": "RO", "roraima": "RR", "santa catarina": "SC", "sao paulo": "SP",
+            "sergipe": "SE", "tocantins": "TO"
+        };
+
+        // Geocodificação reversa (Nominatim/OpenStreetMap) - devolve "Cidade/UF"
+        async function obterCidadeUF(lat, lon) {
+            try {
+                var url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lon}&zoom=10&addressdetails=1&accept-language=pt-BR`;
+                var resp = await fetch(url, { headers: { 'Accept': 'application/json' } });
+                if (!resp.ok) throw new Error("HTTP " + resp.status);
+                var data = await resp.json();
+                var addr = data.address || {};
+                var cidade = addr.city || addr.town || addr.village || addr.municipality || addr.county || "Local não identificado";
+
+                var uf = "";
+                if (addr['ISO3166-2-lvl4']) {
+                    var partes = String(addr['ISO3166-2-lvl4']).split('-');
+                    if (partes.length === 2) uf = partes[1];
+                }
+                if (!uf && addr.state) uf = MAPA_ESTADOS_UF[normalizarTexto(addr.state)] || "";
+
+                return uf ? `${cidade}/${uf}` : cidade;
+            } catch (err) {
+                console.error("Falha ao geocodificar ponto da rota:", err);
+                return "Não foi possível identificar";
+            }
+        }
+
+        // Preenche o painel de Origem / Destino / Distância percorrida no topo do mapa
+        function atualizarPainelRotaOrigemDestino(origem, destino, distanciaMetrosTotal) {
+            var painel = document.getElementById('route-info-panel');
+            if (!painel) return;
+
+            if (!origem || !destino) {
+                painel.style.display = 'none';
+                return;
+            }
+
+            painel.style.display = 'block';
+
+            var elOrigem = document.getElementById('route-info-origem');
+            var elDestino = document.getElementById('route-info-destino');
+            var elDistancia = document.getElementById('route-info-distancia');
+
+            var distKm = distanciaMetrosTotal / 1000;
+            var distFormatada = (distKm >= 10 ? distKm.toFixed(1) : distKm.toFixed(2)).replace('.', ',');
+            elDistancia.innerText = `${distFormatada} km`;
+
+            // Preferência 1: usa a Cidade (e UF, se houver) já presentes na própria planilha —
+            // mais rápido e não depende de internet/API externa.
+            var textoCidadeSheet = function(ponto) {
+                if (!ponto || !ponto.cidadeSheet) return null;
+                return ponto.ufSheet ? `${ponto.cidadeSheet}/${ponto.ufSheet}` : ponto.cidadeSheet;
+            };
+
+            var origemSheet = textoCidadeSheet(origem);
+            var destinoSheet = textoCidadeSheet(destino);
+
+            if (origemSheet) {
+                elOrigem.innerText = origemSheet;
+            } else {
+                elOrigem.innerText = "⏳ localizando...";
+                obterCidadeUF(origem.lat, origem.lon).then(txt => { elOrigem.innerText = txt; });
+            }
+
+            if (destinoSheet) {
+                elDestino.innerText = destinoSheet;
+            } else {
+                elDestino.innerText = "⏳ localizando...";
+                obterCidadeUF(destino.lat, destino.lon).then(txt => { elDestino.innerText = txt; });
+            }
         }
 
         function inicializarGraficoVazio() {
