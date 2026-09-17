@@ -149,6 +149,35 @@
         }
         .route-info-panel .route-info-row { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .route-info-panel b { color: #0f172a; }
+
+        /* Marcador "Última Localização" - pulso discreto para chamar atenção sem poluir o mapa */
+        .ultima-localizacao-icon { position: relative; }
+        .ultima-localizacao-pulso {
+            position: absolute; top: 50%; left: 50%;
+            width: 26px; height: 26px; margin: -13px 0 0 -13px;
+            border-radius: 50%; background: rgba(220, 38, 38, 0.35);
+            animation: pulso-ultima-loc 1.6s ease-out infinite;
+        }
+        .ultima-localizacao-ponto {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            font-size: 16px; text-shadow: 0 0 3px #fff, 0 0 4px #fff;
+        }
+        @keyframes pulso-ultima-loc {
+            0% { transform: scale(0.6); opacity: 0.85; }
+            70% { transform: scale(1.9); opacity: 0; }
+            100% { opacity: 0; }
+        }
+
+        /* Setas discretas indicando o sentido do trajeto (da data/hora menor para a maior) */
+        .seta-direcao-icon { pointer-events: none; }
+        .seta-direcao-icon div {
+            font-size: 13px;
+            color: #1e3a8a;
+            opacity: 0.55;
+            text-align: center;
+            line-height: 14px;
+            text-shadow: 0 0 2px #fff, 0 0 2px #fff, 0 0 2px #fff;
+        }
         .legend-item { display: flex; align-items: center; gap: 6px; }
         .legend-color { width: 12px; height: 12px; border-radius: 50%; border: 1px solid #444; }
         
@@ -213,7 +242,7 @@
 <body>
 
     <header>
-        <h1>🚗 Auditor de Telemetria V30.8 </h1>
+        <h1>🚗 Auditor de Telemetria V30.9 </h1>
         <div style="font-size: 0.75rem; opacity: 0.85;">Mapeamento de excessos de velocidades acima do limite</div>
     </div>
     <button id="btn-sobre" style="
@@ -386,6 +415,7 @@
                     <div class="route-info-row">📍 <b>Origem:</b> <span id="route-info-origem">—</span></div>
                     <div class="route-info-row">🏁 <b>Destino:</b> <span id="route-info-destino">—</span></div>
                     <div class="route-info-row">📏 <b>Distância percorrida:</b> <span id="route-info-distancia">—</span></div>
+                    <button id="btn-ultima-localizacao" class="btn-acao" onclick="irParaUltimaLocalizacao()" disabled style="margin-top:6px; width:100%; background:#dc2626; font-size:0.68rem; padding:4px 6px; border:none; border-radius:4px; color:white; cursor:pointer;">📍 Última Localização</button>
                 </div>
                 <div class="map-legend">
                     <div class="legend-item"><span class="legend-color" style="background:var(--vel-normal);"></span> Regularidade</div>
@@ -512,7 +542,9 @@
             
             if (dadosTelemetriaBrutos.length > 0) executarCruzamentoAssincrono();
         }
-        var map, camadaExcedentes, camadaNormais, camadaTrajeto, camadaAreasRisco, graficoInstancia;
+        var map, camadaExcedentes, camadaNormais, camadaTrajeto, camadaAreasRisco, camadaSetasDirecao, graficoInstancia;
+        var marcadorUltimaLocalizacao = null;
+        var ultimaLocalizacaoConhecida = null;
         var baseViasSegmentadas = []; 
         var baseHistoricoRiscos = []; // {lat, lon, causa, tipo, municipio, data}
         var listaDeExcessosEmAreaRisco = []; // excessos que cruzam com uma área de risco (300m)
@@ -807,6 +839,7 @@ async function carregarHistoricoRiscoAutomaticamente() {
             camadaNormais = L.layerGroup().addTo(map);
             camadaExcedentes = L.layerGroup().addTo(map);
             camadaAreasRisco = L.layerGroup(); // só é adicionada ao mapa quando "HISTÓRICO DE RISCO" está ativo
+            camadaSetasDirecao = L.layerGroup().addTo(map); // setas discretas indicando o sentido do trajeto
 
             // Mantém a escuta dos botões de drop manuais ativada
             configurarZonasDeUpload();
@@ -1118,6 +1151,10 @@ async function carregarHistoricoRiscoAutomaticamente() {
             camadaNormais.clearLayers();
             camadaExcedentes.clearLayers();
             camadaAreasRisco.clearLayers();
+            camadaSetasDirecao.clearLayers();
+            if (marcadorUltimaLocalizacao) { map.removeLayer(marcadorUltimaLocalizacao); marcadorUltimaLocalizacao = null; }
+            ultimaLocalizacaoConhecida = null;
+            document.getElementById('btn-ultima-localizacao').disabled = true;
             
             listaDeExcessosOcorridos = [];
             listaDeExcessosCriticos = [];
@@ -1324,6 +1361,10 @@ async function carregarHistoricoRiscoAutomaticamente() {
                         camadaTrajeto.addLayer(polylineTrajeto);
                         map.fitBounds(polylineTrajeto.getBounds(), { padding: [20, 20] });
 
+                        // Setas discretas indicando o sentido do trajeto (data/hora menor -> maior).
+                        // Usa a mesma ordem "real registrada" da polyline/distância percorrida.
+                        renderizarSetasDirecao(vetorCoordenadasTrajeto);
+
                         var latsTraj = vetorCoordenadasTrajeto.map(p => p[0]);
                         var lonsTraj = vetorCoordenadasTrajeto.map(p => p[1]);
                         bboxTelemetriaAtual = {
@@ -1356,6 +1397,9 @@ async function carregarHistoricoRiscoAutomaticamente() {
                         }
                     }
                     atualizarPainelRotaOrigemDestino(origemPontoRota, destinoPontoRota, distanciaTotalMetrosRota);
+
+                    ultimaLocalizacaoConhecida = destinoPontoRota;
+                    atualizarMarcadorUltimaLocalizacao(destinoPontoRota);
 
                     renderizarGraficoLinhaContinuo();
                     atualizarTabelaDOM();
@@ -1626,6 +1670,94 @@ async function carregarHistoricoRiscoAutomaticamente() {
             } else {
                 elDestino.innerText = "⏳ localizando...";
                 obterCidadeUF(destino.lat, destino.lon).then(txt => { elDestino.innerText = txt; });
+            }
+        }
+
+        // Calcula o rumo (bearing) em graus (0°=Norte, 90°=Leste) entre dois pontos
+        function calcularBearing(lat1, lon1, lat2, lon2) {
+            var toRad = g => g * Math.PI / 180;
+            var toDeg = r => r * 180 / Math.PI;
+            var dLon = toRad(lon2 - lon1);
+            var y = Math.sin(dLon) * Math.cos(toRad(lat2));
+            var x = Math.cos(toRad(lat1)) * Math.sin(toRad(lat2)) - Math.sin(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.cos(dLon);
+            var brng = toDeg(Math.atan2(y, x));
+            return (brng + 360) % 360;
+        }
+
+        // Desenha setas discretas ao longo do trajeto, apontando no sentido de deslocamento
+        // (da data/hora menor para a maior). Espaçadas por distância mínima para não poluir o mapa.
+        function renderizarSetasDirecao(pontos) {
+            if (!camadaSetasDirecao) return;
+            camadaSetasDirecao.clearLayers();
+            if (!pontos || pontos.length < 2) return;
+
+            var distanciaMinimaEntreSetas = 200; // metros
+            var distanciaAcumulada = 0;
+
+            for (var i = 1; i < pontos.length; i++) {
+                var p0 = pontos[i - 1], p1 = pontos[i];
+                distanciaAcumulada += distanciaMetros(p0[0], p0[1], p1[0], p1[1]);
+
+                if (distanciaAcumulada >= distanciaMinimaEntreSetas) {
+                    var bearing = calcularBearing(p0[0], p0[1], p1[0], p1[1]);
+                    // O glifo "➤" aponta para a direita (Leste/90°) em rotação 0; corrige o offset.
+                    var iconeSeta = L.divIcon({
+                        className: 'seta-direcao-icon',
+                        html: `<div style="transform: rotate(${(bearing - 90).toFixed(1)}deg);">➤</div>`,
+                        iconSize: [14, 14],
+                        iconAnchor: [7, 7]
+                    });
+                    var marcadorSeta = L.marker(p1, { icon: iconeSeta, interactive: false, keyboard: false });
+                    camadaSetasDirecao.addLayer(marcadorSeta);
+                    distanciaAcumulada = 0;
+                }
+            }
+        }
+
+        // Cria/atualiza o marcador pulsante da Última Localização Registrada (ponto de data/hora mais recente)
+        function atualizarMarcadorUltimaLocalizacao(ponto) {
+            var btn = document.getElementById('btn-ultima-localizacao');
+            if (marcadorUltimaLocalizacao) {
+                map.removeLayer(marcadorUltimaLocalizacao);
+                marcadorUltimaLocalizacao = null;
+            }
+            if (!ponto) {
+                if (btn) btn.disabled = true;
+                return;
+            }
+
+            var iconeUltimaLoc = L.divIcon({
+                className: 'ultima-localizacao-icon',
+                html: `<div class="ultima-localizacao-pulso"></div><div class="ultima-localizacao-ponto">🏁</div>`,
+                iconSize: [26, 26],
+                iconAnchor: [13, 13]
+            });
+
+            marcadorUltimaLocalizacao = L.marker([ponto.lat, ponto.lon], { icon: iconeUltimaLoc, zIndexOffset: 2000 });
+
+            var cidadeTxt = ponto.cidadeSheet ? (ponto.ufSheet ? `${ponto.cidadeSheet}/${ponto.ufSheet}` : ponto.cidadeSheet) : "";
+            marcadorUltimaLocalizacao.bindPopup(`
+                <div style="font-size:0.75rem; line-height:1.4; min-width:180px; color:#1e293b;">
+                    <b style="color:#0f172a;">🏁 Última Localização Registrada</b><br>
+                    ${cidadeTxt ? `<b>🏙️ Cidade:</b> ${cidadeTxt}<br>` : ''}
+                    <b>⏱️ Data/Hora:</b> ${ponto.horario || '—'}<br>
+                    <b>📍 Coordenadas:</b> ${ponto.lat.toFixed(6)}, ${ponto.lon.toFixed(6)}<br>
+                </div>
+            `);
+            marcadorUltimaLocalizacao.addTo(map);
+
+            if (btn) btn.disabled = false;
+        }
+
+        // Botão "📍 Última Localização": centraliza o mapa no ponto mais recente e abre o pop-up
+        function irParaUltimaLocalizacao() {
+            if (!ultimaLocalizacaoConhecida) {
+                alert("Nenhuma localização carregada ainda. Processe uma planilha primeiro.");
+                return;
+            }
+            map.flyTo([ultimaLocalizacaoConhecida.lat, ultimaLocalizacaoConhecida.lon], Math.max(map.getZoom(), 15), { duration: 1 });
+            if (marcadorUltimaLocalizacao) {
+                setTimeout(() => marcadorUltimaLocalizacao.openPopup(), 350);
             }
         }
 
