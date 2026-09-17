@@ -19,6 +19,7 @@
     <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.25/jspdf.plugin.autotable.min.js"></script>
 
     <style>
         :root {
@@ -212,7 +213,7 @@
 <body>
 
     <header>
-        <h1>🚗 Auditor de Telemetria V30.7 </h1>
+        <h1>🚗 Auditor de Telemetria V30.8 </h1>
         <div style="font-size: 0.75rem; opacity: 0.85;">Mapeamento de excessos de velocidades acima do limite</div>
     </div>
     <button id="btn-sobre" style="
@@ -1536,6 +1537,19 @@ async function carregarHistoricoRiscoAutomaticamente() {
             return String(s || "").normalize('NFD').replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
         }
 
+        // Formata um timestamp (ms) como "dd/mm/aa hh:mm" - usado no título do PDF (posição inicial/final)
+        function formatarDataHoraCurta(ts) {
+            var d = new Date(ts);
+            if (isNaN(d.getTime())) return "";
+            var pad = n => String(n).padStart(2, '0');
+            var dia = pad(d.getDate());
+            var mes = pad(d.getMonth() + 1);
+            var ano = pad(d.getFullYear() % 100);
+            var hh = pad(d.getHours());
+            var mm = pad(d.getMinutes());
+            return `${dia}/${mes}/${ano} ${hh}:${mm}`;
+        }
+
         var MAPA_ESTADOS_UF = {
             "acre": "AC", "alagoas": "AL", "amapa": "AP", "amazonas": "AM", "bahia": "BA",
             "ceara": "CE", "distrito federal": "DF", "espirito santo": "ES", "goias": "GO",
@@ -2314,136 +2328,109 @@ if (btnRiscoAnt && btnRiscoProx && navRiscoContador) {
     });
 }
 function exportarTabelaParaPDF() {
-    // 1. Localiza a tabela original
-    var tabelaOriginal = document.querySelector('#table-container table') || document.getElementById('table-container');
-    if (!tabelaOriginal) {
-        alert("Tabela não encontrada para exportação.");
+    if (!listaDeExcessosOcorridos || listaDeExcessosOcorridos.length === 0) {
+        alert("Não há dados de excessos para exportar.");
         return;
     }
 
-    // 2. Cria um clone temporário para manipulação visual oculta
-    var cloneContainer = document.createElement('div');
-    cloneContainer.style.position = 'absolute';
-    cloneContainer.style.left = '-9999px';
-    cloneContainer.style.top = '0';
-    cloneContainer.style.width = tabelaOriginal.offsetWidth + 'px';
-    cloneContainer.style.height = 'auto';
-    cloneContainer.style.overflow = 'visible';
-    
-    var tabelaClonada = tabelaOriginal.cloneNode(true);
-    
-    // --- OTIMIZAÇÃO 1: REMOVER COLUNAS "FOCO" E "AÇÃO" ---
-    // Procura por textos de cabeçalho que contenham "foco", "ação" ou "acao" e remove a coluna inteira
-    var indicesParaRemover = [];
-    var ths = tabelaClonada.querySelectorAll('th');
-    ths.forEach((th, index) => {
-        var texto = th.innerText.toLowerCase();
-        if (texto.includes('foco') || texto.includes('ação') || texto.includes('acao')) {
-            indicesParaRemover.push(index);
-        }
+    var { jsPDF } = window.jspdf ? window.jspdf : { jsPDF: window.jsPDF };
+    if (!jsPDF) {
+        alert("Erro: A biblioteca jsPDF não está carregada.");
+        return;
+    }
+
+    var pdf = new jsPDF('l', 'mm', 'a4');
+    if (typeof pdf.autoTable !== 'function') {
+        alert("Erro: O plugin jsPDF-AutoTable não foi carregado.");
+        return;
+    }
+
+    // --- Intervalo de datas (posição inicial e final) para compor o título ---
+    var timestampsValidos = listaDeExcessosOcorridos
+        .map(exc => paraTimestampComparavel(exc.horario))
+        .filter(ts => !isNaN(ts));
+
+    var tituloIntervalo = "";
+    if (timestampsValidos.length > 0) {
+        var tsMin = Math.min.apply(null, timestampsValidos);
+        var tsMax = Math.max.apply(null, timestampsValidos);
+        tituloIntervalo = ` de ${formatarDataHoraCurta(tsMin)} a ${formatarDataHoraCurta(tsMax)}`;
+    }
+    var tituloRelatorio = `Tabela de Excessos Ocorridos${tituloIntervalo}`;
+
+    var exibirClima = document.getElementById('chk-ativar-clima') && document.getElementById('chk-ativar-clima').checked;
+
+    // --- Monta cabeçalho e linhas direto dos dados (texto vetorial: leve, nítido, sem rasterizar) ---
+    var colunas = ["Cidade", "Via", "Data e Hora", "Vel. da Via", "Vel. Registrada (+%)"];
+    if (exibirClima) colunas.push("Clima");
+
+    var linhasTabela = listaDeExcessosOcorridos.map(exc => {
+        var linha = [
+            exc.cidade || "",
+            exc.nomeVia || "",
+            exc.horario || "",
+            `${exc.velMaxVia} km/h`,
+            `${exc.velReg} km/h (+${exc.pct.toFixed(0)}%)`
+        ];
+        if (exibirClima) linha.push(exc.climaTexto || exc.clima || "-");
+        return linha;
     });
 
-    // Remove as células correspondentes de cada linha (cabeçalho e corpo)
-    var linhasClonadas = tabelaClonada.querySelectorAll('tr');
-    linhasClonadas.forEach(linha => {
-        // Remove de trás para frente para não quebrar a ordem dos índices restantes
-        for (var i = indicesParaRemover.length - 1; i >= 0; i--) {
-            var celula = linha.children[indicesParaRemover[i]];
-            if (celula) celula.remove();
-        }
-    });
+    var larguraPagina = pdf.internal.pageSize.getWidth();
+    var alturaPagina = pdf.internal.pageSize.getHeight();
 
-    // --- OTIMIZAÇÃO 2: COMPACTAR TEXTO E ESPAÇOS (CABER 3X MAIS LINHAS) ---
-    tabelaClonada.style.fontSize = '5px'; // Diminui o tamanho da fonte significativamente
-    tabelaClonada.style.lineHeight = '1.1';
-    tabelaClonada.style.width = '100%';
-    
-    // Força todas as células (th e td) a terem um preenchimento mínimo
-    var todasCelulas = tabelaClonada.querySelectorAll('th, td');
-    todasCelulas.forEach(cel => {
-        cel.style.padding = '2px 3px !important'; // Reduz o espaço em branco interno drasticamente
-        cel.style.height = 'auto';
-    });
-
-    cloneContainer.appendChild(tabelaClonada);
-    document.body.appendChild(cloneContainer);
-
-    // 3. Renderiza o clone tratado e compactado
-    html2canvas(cloneContainer, { 
-        scale: 2, // Mantém ótima qualidade de leitura mesmo com a fonte pequena
-        backgroundColor: '#ffffff',
-        useCORS: true 
-    }).then(canvas => {
-        // Limpa o clone da tela
-        document.body.removeChild(cloneContainer);
-
-        var { jsPDF } = window.jspdf;
-        if (!jsPDF) {
-            alert("Erro: A biblioteca jsPDF não está carregada.");
-            return;
-        }
-
-        var pdf = new jsPDF('l', 'mm', 'a4');
-        
-        // Configurações de layout da página
-        var larguraPdf = 297;
-        var alturaPdf = 210;
-        var margemX = 10;
-        var margemY = 16; 
-        
-        var larguraUtil = larguraPdf - (margemX * 2); // 277mm
-        var alturaUtil = alturaPdf - 28; // Aproveita ao máximo a altura da folha
-
-        var alturaTotalImagem = (canvas.height * larguraUtil) / canvas.width;
-        
-        var posicaoYInical = margemY;
-        var alturaRestante = alturaTotalImagem;
-        var paginaAtual = 1;
-
-        // Cabeçalho simplificado para economizar espaço inicial
-        pdf.setFont("Helvetica", "bold");
-        pdf.setFontSize(12);
-        pdf.text("Relatório de Telemetria - Tabela de Excessos Ocorridos", margemX, 10);
-        
-        pdf.setFontSize(8);
-        pdf.setFont("Helvetica", "normal");
-        pdf.text("Página " + paginaAtual, larguraPdf - 25, alturaPdf - 8);
-
-        var canvasTemporario = document.createElement('canvas');
-        canvasTemporario.width = canvas.width;
-        
-        // Loop de quebra de páginas
-        while (alturaRestante > 0) {
-            var proporcaoCorte = Math.min(alturaRestante, alturaUtil);
-            var pixelCorteHeight = (proporcaoCorte * canvas.width) / larguraUtil;
-            
-            canvasTemporario.height = pixelCorteHeight;
-            var ctxTemp = canvasTemporario.getContext('2d');
-            
-            var pixelYOrigem = ((alturaTotalImagem - alturaRestante) * canvas.width) / larguraUtil;
-            ctxTemp.drawImage(canvas, 0, pixelYOrigem, canvas.width, pixelCorteHeight, 0, 0, canvas.width, pixelCorteHeight);
-            
-            var imgFatiadaData = canvasTemporario.toDataURL('image/png');
-            
-            pdf.addImage(imgFatiadaData, 'PNG', margemX, posicaoYInical, larguraUtil, proporcaoCorte);
-            
-            alturaRestante -= proporcaoCorte;
-            posicaoYInical = 10; // Próximas páginas começam coladas no topo para renderizar o máximo de dados
-
-            if (alturaRestante > 0) {
-                pdf.addPage();
-                paginaAtual++;
-                
-                pdf.setFont("Helvetica", "normal");
-                pdf.setFontSize(7);
-                pdf.text("Página " + paginaAtual, larguraPdf - 25, alturaPdf - 8);
+    pdf.autoTable({
+        head: [colunas],
+        body: linhasTabela,
+        startY: 18,
+        margin: { left: 8, right: 8, top: 18, bottom: 12 },
+        theme: 'grid',
+        tableWidth: 'auto',
+        styles: {
+            fontSize: 7,               // Compacto: cabe muito mais linhas por página
+            cellPadding: 1.4,
+            overflow: 'linebreak',
+            valign: 'middle',
+            lineColor: [203, 213, 225],
+            lineWidth: 0.1
+        },
+        headStyles: {
+            fillColor: [30, 41, 59],
+            textColor: 255,
+            fontSize: 7.5,
+            fontStyle: 'bold',
+            halign: 'center'
+        },
+        alternateRowStyles: { fillColor: [248, 250, 252] },
+        columnStyles: {
+            2: { cellWidth: 30 },   // Data e Hora
+            3: { cellWidth: 22, halign: 'center' },
+            4: { cellWidth: 34, halign: 'center' }
+        },
+        // Destaca em vermelho as linhas críticas (excesso >= 50%), igual à tabela em tela
+        didParseCell: function(data) {
+            if (data.section === 'body') {
+                var registro = listaDeExcessosOcorridos[data.row.index];
+                if (registro && registro.pct >= 50) {
+                    data.cell.styles.textColor = [185, 28, 28];
+                    data.cell.styles.fontStyle = 'bold';
+                }
             }
+        },
+        // Título e numeração de página, repetidos automaticamente em toda página gerada
+        didDrawPage: function() {
+            pdf.setFont("Helvetica", "bold");
+            pdf.setFontSize(11);
+            pdf.text(tituloRelatorio, 8, 11);
+
+            pdf.setFont("Helvetica", "normal");
+            pdf.setFontSize(7.5);
+            var paginaAtual = pdf.internal.getNumberOfPages();
+            pdf.text("Página " + paginaAtual, larguraPagina - 22, alturaPagina - 6);
         }
-        
-        pdf.save('tabela-compacta-excessos.pdf');
-    }).catch(err => {
-        console.error("Erro ao gerar PDF:", err);
     });
+
+    pdf.save('tabela-excessos.pdf');
 }
     </script>
 </body>
