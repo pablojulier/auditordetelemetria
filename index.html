@@ -242,7 +242,7 @@
 <body>
 
     <header>
-        <h1>🚗 Auditor de Telemetria V30.9 </h1>
+        <h1>🚗 Auditor de Telemetria V31.2 </h1>
         <div style="font-size: 0.75rem; opacity: 0.85;">Mapeamento de excessos de velocidades acima do limite</div>
     </div>
     <button id="btn-sobre" style="
@@ -2434,30 +2434,142 @@ if (btnRiscoAnt && btnRiscoProx && navRiscoContador) {
         }
 
         function exportarGraficoParaPDF() {
-    var alvoDOM = document.getElementById('chart-container');
-    if (!alvoDOM) return;
+    var chart = graficoInstancia;
+    var canvasOrigem = document.getElementById('chartExcessosFaixas');
+    if (!chart || !canvasOrigem) return;
 
-    var btn = document.getElementById('btn-pdf-grafico');
-    if(btn) btn.style.display = 'none'; // Esconde temporariamente para não sair no PDF
+    var { jsPDF } = window.jspdf ? window.jspdf : { jsPDF: window.jsPDF };
+    if (!jsPDF) {
+        alert("A biblioteca jsPDF não foi detectada no escopo global.");
+        return;
+    }
 
-    html2canvas(alvoDOM, { scale: 2, backgroundColor: '#ffffff' }).then(canvas => {
-        if(btn) btn.style.display = ''; // Mostra o botão de volta
-        
-        var imgData = canvas.toDataURL('image/png');
-        var { jsPDF } = window.jspdf ? window.jspdf : { jsPDF: window.jsPDF };
-        
-        if (!jsPDF) {
-            alert("A biblioteca jsPDF não foi detectada no escopo global.");
-            return;
+    // --- 1) Imagem do gráfico: re-renderiza o próprio Chart.js em alta resolução (nítido) ---
+    //     e comprime em JPEG (leve). O gráfico volta ao estado original logo em seguida.
+    var larguraCss = canvasOrigem.clientWidth || 700;
+    var escalaQualidade = Math.min(4, Math.max(2, 2400 / larguraCss)); // ~2400px de largura
+    var dprOriginal = chart.options.devicePixelRatio;
+    var imgData = null, imgLarguraPx = 0, imgAlturaPx = 0;
+
+    try {
+        chart.options.devicePixelRatio = escalaQualidade;
+        chart.resize();
+
+        var tmp = document.createElement('canvas');
+        tmp.width = canvasOrigem.width;
+        tmp.height = canvasOrigem.height;
+        var tctx = tmp.getContext('2d');
+        tctx.fillStyle = '#ffffff';           // JPEG não tem transparência
+        tctx.fillRect(0, 0, tmp.width, tmp.height);
+        tctx.drawImage(canvasOrigem, 0, 0);
+
+        imgLarguraPx = tmp.width;
+        imgAlturaPx = tmp.height;
+        imgData = tmp.toDataURL('image/jpeg', 0.92);
+    } finally {
+        chart.options.devicePixelRatio = dprOriginal; // volta ao comportamento automático
+        chart.resize();
+    }
+
+    // --- 2) Período (data/hora inicial e final) a partir dos dados do gráfico ---
+    function tsDoRotulo(s) {
+        var str = String(s || '');
+        var m = str.match(/(\d{1,2})\/(\d{1,2})\/(\d{2,4})(?:\D+(\d{1,2}):(\d{2}))?/);
+        if (m) {
+            var ano = parseInt(m[3], 10);
+            if (ano < 100) ano += 2000;
+            var d = new Date(ano, parseInt(m[2], 10) - 1, parseInt(m[1], 10), parseInt(m[4] || 0, 10), parseInt(m[5] || 0, 10));
+            if (!isNaN(d.getTime())) return d.getTime();
         }
+        return NaN;
+    }
+    function fmtDataHoraCompleta(ts) {
+        var d = new Date(ts);
+        var p = n => String(n).padStart(2, '0');
+        return p(d.getDate()) + '/' + p(d.getMonth() + 1) + '/' + d.getFullYear() + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+    }
 
-        var pdf = new jsPDF('l', 'mm', 'a4');
-        pdf.setFont("Helvetica", "bold");
-        pdf.setFontSize(14);
-        pdf.text("Relatório de Telemetria - Gráfico de Velocidade", 10, 15);
-        pdf.addImage(imgData, 'PNG', 10, 25, 277, 150);
-        pdf.save('grafico-velocidades.pdf');
-    });
+    var tsValidos = (historicoLinhaGrafico || []).map(h => tsDoRotulo(h.hora)).filter(ts => !isNaN(ts));
+    var textoPeriodo = "";
+    if (tsValidos.length > 0) {
+        var tsIni = Math.min.apply(null, tsValidos);
+        var tsFim = Math.max.apply(null, tsValidos);
+        textoPeriodo = "Período: " + fmtDataHoraCompleta(tsIni) + "  até  " + fmtDataHoraCompleta(tsFim);
+    }
+
+    // --- 3) Monta o PDF (texto vetorial no cabeçalho + imagem otimizada) ---
+    var pdf = new jsPDF({ orientation: 'l', unit: 'mm', format: 'a4', compress: true });
+    var larguraPagina = pdf.internal.pageSize.getWidth();
+    var alturaPagina = pdf.internal.pageSize.getHeight();
+    var margem = 10;
+
+    pdf.setFont("Helvetica", "bold");
+    pdf.setFontSize(15);
+    pdf.text("Relatório - Gráfico de Velocidade", margem, 14);
+
+    var yAtual = 14;
+    if (textoPeriodo) {
+        yAtual += 7;
+        pdf.setFont("Helvetica", "normal");
+        pdf.setFontSize(10.5);
+        pdf.text(textoPeriodo, margem, yAtual);
+    }
+
+    var elPicos = document.getElementById('stat-total-picos');
+    var elMax = document.getElementById('stat-max-velocidade');
+    var valPicos = elPicos ? elPicos.textContent.trim() : "0";
+    var valMax = elMax ? elMax.textContent.trim() : "0 km/h";
+
+    // Barra de estatísticas (título do gráfico): rótulo à esquerda e à direita, valores em vermelho
+    var boxX = margem, boxY = yAtual + 4, boxW = larguraPagina - 2 * margem, boxH = 11;
+    var yTexto = boxY + boxH / 2 + 1.7;
+    pdf.setFillColor(248, 250, 252);
+    pdf.setDrawColor(203, 213, 225);
+    pdf.setLineWidth(0.3);
+    pdf.roundedRect(boxX, boxY, boxW, boxH, 2, 2, 'FD');
+
+    pdf.setFont("Helvetica", "bold");
+    pdf.setFontSize(13);
+
+    function desenharRotuloValor(xInicio, rotulo, valor) {
+        pdf.setTextColor(51, 65, 85);
+        pdf.text(rotulo, xInicio, yTexto);
+        pdf.setTextColor(220, 38, 38);
+        pdf.text(valor, xInicio + pdf.getTextWidth(rotulo), yTexto);
+    }
+
+    // Lado esquerdo: ícone de alvo + TOTAL PICOS EXCEDIDOS
+    var cxAlvo = boxX + 7, cyAlvo = boxY + boxH / 2;
+    pdf.setDrawColor(225, 29, 72);
+    pdf.setLineWidth(0.5);
+    pdf.circle(cxAlvo, cyAlvo, 2.2, 'S');
+    pdf.setFillColor(225, 29, 72);
+    pdf.circle(cxAlvo, cyAlvo, 0.9, 'F');
+    desenharRotuloValor(boxX + 12, "TOTAL PICOS EXCEDIDOS: ", valPicos);
+
+    // Lado direito: ícone de raio + MAIOR VELOCIDADE REGISTRADA
+    var rotuloMax = "MAIOR VELOCIDADE REGISTRADA: ";
+    var larguraDireita = pdf.getTextWidth(rotuloMax) + pdf.getTextWidth(valMax);
+    var xDireita = boxX + boxW - 6 - larguraDireita;
+    pdf.setFillColor(249, 115, 22);
+    var bx = xDireita - 5, by = cyAlvo;
+    pdf.triangle(bx + 1.2, by - 2.6, bx - 1.2, by + 0.3, bx + 0.6, by + 0.3, 'F');
+    pdf.triangle(bx - 0.6, by + 0.1, bx + 1.4, by + 0.1, bx - 1.0, by + 2.8, 'F');
+    desenharRotuloValor(xDireita, rotuloMax, valMax);
+
+    pdf.setTextColor(0, 0, 0); // restaura a cor padrão
+    yAtual = boxY + boxH;
+
+    var yImagem = yAtual + 4;
+    var larguraMax = larguraPagina - 2 * margem;
+    var alturaMax = alturaPagina - yImagem - margem;
+    var proporcao = imgAlturaPx / imgLarguraPx;
+    var wPdf = larguraMax;
+    var hPdf = wPdf * proporcao;
+    if (hPdf > alturaMax) { hPdf = alturaMax; wPdf = hPdf / proporcao; }
+
+    pdf.addImage(imgData, 'JPEG', margem, yImagem, wPdf, hPdf, undefined, 'FAST');
+    pdf.save('grafico-velocidades.pdf');
 }
 function exportarTabelaParaPDF() {
     if (!listaDeExcessosOcorridos || listaDeExcessosOcorridos.length === 0) {
@@ -2564,6 +2676,186 @@ function exportarTabelaParaPDF() {
 
     pdf.save('tabela-excessos.pdf');
 }
+    </script>
+
+    <script>
+        /* =====================================================================
+           CONSULTA DE VELOCIDADE DA VIA POR CLIQUE NO MAPA (recurso independente)
+           Usa a malha já carregada em baseViasSegmentadas (GitHub + GeoJSON importados)
+           e NÃO depende de existir uma posição/ponto da telemetria no local.
+           ===================================================================== */
+        var consultaViaAtiva = false;
+        var camadaConsultaVia = null;
+        var botaoConsultaVia = null;
+
+        function escaparHtmlConsultaVia(s) {
+            return String(s == null ? "" : s).replace(/[&<>"']/g, function(c) {
+                return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+            });
+        }
+
+        function inicializarConsultaViaMapa() {
+            if (typeof map === 'undefined' || !map) return;
+            camadaConsultaVia = L.layerGroup().addTo(map);
+
+            var ControleConsultaVia = L.Control.extend({
+                options: { position: 'topleft' },
+                onAdd: function() {
+                    var div = L.DomUtil.create('div', 'leaflet-bar');
+                    var a = L.DomUtil.create('a', '', div);
+                    a.href = '#';
+                    a.title = 'Clique no mapa para consultar a velocidade da via naquele trecho';
+                    a.innerHTML = '🛣️ Consultar velocidade da via';
+                    a.style.cssText = 'width:auto; padding:0 10px; font-size:12px; font-weight:600; line-height:30px; height:30px; white-space:nowrap; text-decoration:none; cursor:pointer; margin-top: 15px;';
+                    L.DomEvent.disableClickPropagation(div);
+                    L.DomEvent.on(a, 'click', function(e) {
+                        L.DomEvent.preventDefault(e);
+                        alternarConsultaViaMapa();
+                    });
+                    botaoConsultaVia = a;
+                    return div;
+                }
+            });
+            map.addControl(new ControleConsultaVia());
+
+            document.addEventListener('keydown', function(e) {
+                if (e.key === 'Escape' && consultaViaAtiva) alternarConsultaViaMapa(false);
+            });
+        }
+
+        function alternarConsultaViaMapa(forcar) {
+            consultaViaAtiva = (typeof forcar === 'boolean') ? forcar : !consultaViaAtiva;
+
+            if (consultaViaAtiva) {
+                map.on('click', tratarCliqueConsultaVia);
+                map.getContainer().style.cursor = 'crosshair';
+                if (botaoConsultaVia) {
+                    botaoConsultaVia.innerHTML = '🎯 Clique no mapa… (Esc para sair)';
+                    botaoConsultaVia.style.background = '#dc2626';
+                    botaoConsultaVia.style.color = '#ffffff';
+                }
+            } else {
+                map.off('click', tratarCliqueConsultaVia);
+                map.getContainer().style.cursor = '';
+                if (camadaConsultaVia) camadaConsultaVia.clearLayers();
+                map.closePopup();
+                if (botaoConsultaVia) {
+                    botaoConsultaVia.innerHTML = '🛣️ Consultar velocidade da via';
+                    botaoConsultaVia.style.background = '';
+                    botaoConsultaVia.style.color = '';
+                }
+            }
+        }
+
+        function montarLinhaViaConsulta(via, dist, destaque) {
+            var p = via.properties || {};
+            var nome = p.name || p.ref || "Via Mapeada Sem Nome";
+            var cidade = p.is_in || p.municipality || p.county || "";
+
+            var velOriginal = extrairVelocidadeNumerica(p.maxspeed);
+            var semLimite = !velOriginal;
+            var velBase = velOriginal || 60; // mesmo padrão adotado no processamento da telemetria
+
+            // Mesmas regras especiais aplicadas no processamento (CTB Caminhão / Operação MBF)
+            var elCtb = document.getElementById('chk-ctb-caminhao');
+            var elMbf = document.getElementById('chk-operacao-mbf');
+            var velAplicada = velBase;
+            var regras = [];
+            if (elCtb && elCtb.checked && velBase > 90) { velAplicada = 90; regras.push("CTB Caminhão"); }
+            if (elMbf && elMbf.checked && velAplicada > 80) { velAplicada = 80; regras.push("Operação MBF"); }
+
+            var html = '<div style="' + (destaque ? '' : 'border-top:1px solid #e2e8f0; margin-top:6px; padding-top:6px;') + '">';
+            html += '<b style="color:#0f172a;">' + (destaque ? '🛣️ ' : '↔️ ') + escaparHtmlConsultaVia(nome) + '</b>';
+            if (p.ref && p.name && p.ref !== p.name) html += ' <span style="color:#64748b;">(' + escaparHtmlConsultaVia(p.ref) + ')</span>';
+            html += '<br>';
+            if (cidade) html += '🏙️ ' + escaparHtmlConsultaVia(cidade) + '<br>';
+
+            if (semLimite) {
+                html += '⛔ <b>Limite:</b> <span style="color:#b45309;">sem limite cadastrado no GeoJSON</span> (o painel adota ' + velBase + ' km/h)<br>';
+            } else {
+                html += '⛔ <b>Limite da via:</b> <span style="font-weight:bold; color:#dc2626; font-size:1.05rem;">' + velOriginal + ' km/h</span><br>';
+            }
+            if (regras.length > 0) {
+                html += '⚖️ <b>Limite aplicado (' + regras.join(' + ') + '):</b> ' + velAplicada + ' km/h<br>';
+            }
+            html += '<span style="color:#64748b;">📏 A ' + Math.round(dist) + ' m do ponto clicado</span>';
+            html += '</div>';
+            return html;
+        }
+
+        function tratarCliqueConsultaVia(e) {
+            var lat = e.latlng.lat, lon = e.latlng.lng;
+            if (camadaConsultaVia) camadaConsultaVia.clearLayers();
+
+            if (!baseViasSegmentadas || baseViasSegmentadas.length === 0) {
+                L.popup().setLatLng(e.latlng)
+                    .setContent('⚠️ Nenhuma malha viária carregada ainda. Aguarde o download do GitHub ou importe um GeoJSON.')
+                    .openOn(map);
+                return;
+            }
+
+            // Raio de busca: o configurado no painel, ampliado conforme o zoom (cliques em zoom baixo são imprecisos)
+            var raioCfg = parseFloat(document.getElementById('cfg-raio').value) || 25;
+            var metrosPorPixel = 40075016.686 * Math.cos(lat * Math.PI / 180) / Math.pow(2, map.getZoom() + 8);
+            var raioBusca = Math.min(150, Math.max(raioCfg, metrosPorPixel * 12));
+
+            var dLat = raioBusca / 111320;
+            var dLon = dLat / Math.max(0.01, Math.cos(lat * Math.PI / 180));
+            var margemBbox = 0.0009; // mesma margem usada ao montar expandedBbox
+            var pontoTurf = turf.point([lon, lat]);
+            var candidatas = [];
+
+            for (var i = 0; i < baseViasSegmentadas.length; i++) {
+                var via = baseViasSegmentadas[i];
+                var bb = via.expandedBbox;
+                if (!bb) continue;
+                if (lon < bb[0] + margemBbox - dLon || lon > bb[2] - margemBbox + dLon ||
+                    lat < bb[1] + margemBbox - dLat || lat > bb[3] - margemBbox + dLat) continue;
+                try {
+                    var proj = turf.nearestPointOnLine(via, pontoTurf, { units: 'meters' });
+                    var dist = proj.properties.dist;
+                    if (dist <= raioBusca) candidatas.push({ via: via, dist: dist, ponto: proj.geometry.coordinates });
+                } catch (err) { /* geometria inválida: ignora */ }
+            }
+
+            if (candidatas.length === 0) {
+                L.circleMarker(e.latlng, { radius: 4, color: '#64748b', fillColor: '#ffffff', fillOpacity: 1, weight: 2 }).addTo(camadaConsultaVia);
+                L.popup().setLatLng(e.latlng)
+                    .setContent('🚫 Nenhuma via da malha encontrada em até ' + Math.round(raioBusca) + ' m deste ponto.<br><span style="color:#64748b;">Aproxime o zoom, clique mais perto da via ou aumente o raio de tolerância.</span>')
+                    .openOn(map);
+                return;
+            }
+
+            candidatas.sort(function(a, b) { return a.dist - b.dist; });
+            var principal = candidatas[0];
+
+            // Destaca o trecho identificado e o ponto mais próximo sobre a via
+            try {
+                L.geoJSON(principal.via, { style: { color: '#2563eb', weight: 6, opacity: 0.75 }, interactive: false }).addTo(camadaConsultaVia);
+            } catch (err) { /* sem destaque */ }
+            L.circleMarker([principal.ponto[1], principal.ponto[0]], { radius: 5, color: '#1d4ed8', fillColor: '#ffffff', fillOpacity: 1, weight: 3, interactive: false }).addTo(camadaConsultaVia);
+
+            var html = '<div style="font-size:0.78rem; line-height:1.45; min-width:210px; color:#1e293b;">';
+            html += montarLinhaViaConsulta(principal.via, principal.dist, true);
+
+            // Vias próximas diferentes (cruzamentos, marginais), no máximo 2
+            var vistas = { };
+            vistas[(principal.via.properties && (principal.via.properties.name || principal.via.properties.ref)) || ''] = true;
+            var extras = 0;
+            for (var k = 1; k < candidatas.length && extras < 2; k++) {
+                var pr = candidatas[k].via.properties || {};
+                var chave = pr.name || pr.ref || '';
+                if (vistas[chave]) continue;
+                vistas[chave] = true;
+                html += montarLinhaViaConsulta(candidatas[k].via, candidatas[k].dist, false);
+                extras++;
+            }
+            html += '</div>';
+
+            L.popup({ maxWidth: 300 }).setLatLng(e.latlng).setContent(html).openOn(map);
+        }
+
+        window.addEventListener('DOMContentLoaded', inicializarConsultaViaMapa);
     </script>
 </body>
 </html>
