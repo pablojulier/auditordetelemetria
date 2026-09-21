@@ -242,7 +242,7 @@
 <body>
 
     <header>
-        <h1>🚗 Auditor de Telemetria V31.2 </h1>
+        <h1>🚗 Auditor de Telemetria V31.4 </h1>
         <div style="font-size: 0.75rem; opacity: 0.85;">Mapeamento de excessos de velocidades acima do limite</div>
     </div>
     <button id="btn-sobre" style="
@@ -545,6 +545,7 @@
         var map, camadaExcedentes, camadaNormais, camadaTrajeto, camadaAreasRisco, camadaSetasDirecao, graficoInstancia;
         var marcadorUltimaLocalizacao = null;
         var ultimaLocalizacaoConhecida = null;
+        var primeiraLocalizacaoConhecida = null; // ponto de data/hora mais antiga entre TODAS as posições importadas
         var baseViasSegmentadas = []; 
         var baseHistoricoRiscos = []; // {lat, lon, causa, tipo, municipio, data}
         var listaDeExcessosEmAreaRisco = []; // excessos que cruzam com uma área de risco (300m)
@@ -821,6 +822,7 @@ async function carregarHistoricoRiscoAutomaticamente() {
         window.addEventListener('DOMContentLoaded', function() {
             var googleVias = L.tileLayer('https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}', { attribution: '© Google Maps' });
             var googleSatelite = L.tileLayer('https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}', { attribution: '© Google Maps Satélite' });
+            var googleHibrido = L.tileLayer('https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', { attribution: '© Google Maps Híbrido' });
 
             map = L.map('map', {
                 center: [-15.7801, -47.9292],
@@ -830,7 +832,8 @@ async function carregarHistoricoRiscoAutomaticamente() {
 
             var mapasBase = {
                 "Google Maps (Vias)": googleVias,
-                "Google Satélite": googleSatelite
+                "Google Satélite": googleSatelite,
+                "Mapa Misto (Satélite + Vias)": googleHibrido
             };
 
             L.control.layers(mapasBase, null, { position: 'topright', collapsed: false }).addTo(map);
@@ -1154,6 +1157,7 @@ async function carregarHistoricoRiscoAutomaticamente() {
             camadaSetasDirecao.clearLayers();
             if (marcadorUltimaLocalizacao) { map.removeLayer(marcadorUltimaLocalizacao); marcadorUltimaLocalizacao = null; }
             ultimaLocalizacaoConhecida = null;
+            primeiraLocalizacaoConhecida = null;
             document.getElementById('btn-ultima-localizacao').disabled = true;
             
             listaDeExcessosOcorridos = [];
@@ -1398,6 +1402,7 @@ async function carregarHistoricoRiscoAutomaticamente() {
                     }
                     atualizarPainelRotaOrigemDestino(origemPontoRota, destinoPontoRota, distanciaTotalMetrosRota);
 
+                    primeiraLocalizacaoConhecida = origemPontoRota;
                     ultimaLocalizacaoConhecida = destinoPontoRota;
                     atualizarMarcadorUltimaLocalizacao(destinoPontoRota);
 
@@ -2590,15 +2595,25 @@ function exportarTabelaParaPDF() {
     }
 
     // --- Intervalo de datas (posição inicial e final) para compor o título ---
-    var timestampsValidos = listaDeExcessosOcorridos
-        .map(exc => paraTimestampComparavel(exc.horario))
-        .filter(ts => !isNaN(ts));
-
+    // Usa TODAS as posições importadas da telemetria (não apenas as que tiveram excesso),
+    // para refletir o período real de monitoramento coberto pela planilha.
     var tituloIntervalo = "";
-    if (timestampsValidos.length > 0) {
-        var tsMin = Math.min.apply(null, timestampsValidos);
-        var tsMax = Math.max.apply(null, timestampsValidos);
-        tituloIntervalo = ` de ${formatarDataHoraCurta(tsMin)} a ${formatarDataHoraCurta(tsMax)}`;
+    var tsInicioTelemetria = primeiraLocalizacaoConhecida ? paraTimestampComparavel(primeiraLocalizacaoConhecida.horario) : NaN;
+    var tsFimTelemetria = ultimaLocalizacaoConhecida ? paraTimestampComparavel(ultimaLocalizacaoConhecida.horario) : NaN;
+
+    if (!isNaN(tsInicioTelemetria) && !isNaN(tsFimTelemetria)) {
+        tituloIntervalo = ` de ${formatarDataHoraCurta(tsInicioTelemetria)} a ${formatarDataHoraCurta(tsFimTelemetria)}`;
+    } else {
+        // Reserva: se por algum motivo a data/hora de toda a telemetria não estiver disponível,
+        // cai de volta para o intervalo apenas dos excessos (comportamento anterior).
+        var timestampsValidos = listaDeExcessosOcorridos
+            .map(exc => paraTimestampComparavel(exc.horario))
+            .filter(ts => !isNaN(ts));
+        if (timestampsValidos.length > 0) {
+            var tsMin = Math.min.apply(null, timestampsValidos);
+            var tsMax = Math.max.apply(null, timestampsValidos);
+            tituloIntervalo = ` de ${formatarDataHoraCurta(tsMin)} a ${formatarDataHoraCurta(tsMax)}`;
+        }
     }
     var tituloRelatorio = `Tabela de Excessos Ocorridos${tituloIntervalo}`;
 
