@@ -242,7 +242,7 @@
 <body>
 
     <header>
-        <h1>🚗 Auditor de Telemetria V31.4 </h1>
+        <h1>🚗 Auditor de Telemetria V31.5 </h1>
         <div style="font-size: 0.75rem; opacity: 0.85;">Mapeamento de excessos de velocidades acima do limite</div>
     </div>
     <button id="btn-sobre" style="
@@ -499,17 +499,37 @@
             var statusBadge = document.getElementById('status-json');
             printLog("Iniciando importação automática das vias do GitHub...");
 
-            const urlsGeoJSON = [
-              "https://raw.githubusercontent.com/pablojulier/dadosGeojsonbr/main/C.Oeste_parte_1.geojson",
-              "https://raw.githubusercontent.com/pablojulier/dadosGeojsonbr/main/Nordeste_parte_1.geojson",
-              "https://raw.githubusercontent.com/pablojulier/dadosGeojsonbr/main/Nordeste_parte_2.geojson",
-              "https://raw.githubusercontent.com/pablojulier/dadosGeojsonbr/main/Norte.geojson",
-              "https://raw.githubusercontent.com/pablojulier/dadosGeojsonbr/main/Sudeste_parte_1.geojson",
-              "https://raw.githubusercontent.com/pablojulier/dadosGeojsonbr/main/Sudeste_parte_2.geojson",
-              "https://raw.githubusercontent.com/pablojulier/dadosGeojsonbr/main/Sudeste_parte_3.geojson",
-              "https://raw.githubusercontent.com/pablojulier/dadosGeojsonbr/main/Sul_parte_1.geojson",
-              "https://raw.githubusercontent.com/pablojulier/dadosGeojsonbr/main/Sul_parte_2.geojson"
-            ];
+            // Descobre automaticamente TODOS os arquivos .geojson que existem
+            // atualmente no repositório do GitHub, independente do nome.
+            const usuarioGitHub = "pablojulier";
+            const repoGitHub = "dadosGeojsonbr";
+            const branchGitHub = "main";
+            let urlsGeoJSON = [];
+
+            try {
+                statusBadge.innerText = "⏳ Consultando lista de arquivos no GitHub...";
+                const apiUrl = `https://api.github.com/repos/${usuarioGitHub}/${repoGitHub}/contents/?ref=${branchGitHub}&per_page=100`;
+                const respostaApi = await fetch(apiUrl, { headers: { "Accept": "application/vnd.github.v3+json" } });
+
+                if (!respostaApi.ok) {
+                    throw new Error(`GitHub API retornou status ${respostaApi.status}`);
+                }
+
+                const listaArquivos = await respostaApi.json();
+
+                urlsGeoJSON = listaArquivos
+                    .filter(item => item.type === "file" && item.name.toLowerCase().endsWith(".geojson"))
+                    .map(item => item.download_url);
+
+                printLog(`Encontrados ${urlsGeoJSON.length} arquivo(s) .geojson no repositório.`);
+            } catch (err) {
+                console.error("Erro ao consultar a lista de arquivos do GitHub: ", err);
+                printLog("Falha ao consultar automaticamente os arquivos do GitHub. Verifique a conexão ou o repositório.", true);
+                statusBadge.innerText = "❌ Falha ao listar arquivos do GitHub";
+                statusBadge.style.color = "#dc2626";
+                statusBadge.style.background = "#fef2f2";
+                statusBadge.style.borderColor = "#fecaca";
+            }
 
             for (let i = 0; i < urlsGeoJSON.length; i++) {
                 try {
@@ -1235,9 +1255,10 @@ async function carregarHistoricoRiscoAutomaticamente() {
                     var dataHoraBrutaOriginal = obterDataHoraBruta(linha);
                     var dataHoraFormatada = formatarDataHora(dataHoraBrutaOriginal);
                     
-                    // Extrai o limite cartográfico original da via (padrão 60 se não houver malha)
-                    var velMaxViaOriginal = viaIdentificada ? extrairVelocidadeNumerica(viaIdentificada.properties.maxspeed) : 60;
-                    if(!velMaxViaOriginal) velMaxViaOriginal = 60;
+                    // Extrai o limite cartográfico original da via.
+                    // Sem "maxspeed" no GeoJSON, adota o padrão por tipo de via (rodovias: 80 km/h; demais: 60 km/h).
+                    var velMaxViaOriginal = viaIdentificada ? extrairVelocidadeNumerica(viaIdentificada.properties.maxspeed) : null;
+                    if(!velMaxViaOriginal) velMaxViaOriginal = obterVelocidadePadraoPorTipoVia(viaIdentificada ? viaIdentificada.properties : null);
 
                     // APLICAÇÃO DAS REGRAS ESPECIAIS (CTB Caminhão e Operação MBF)
                     var velMaxViaRegulamentada = velMaxViaOriginal;
@@ -1427,6 +1448,14 @@ async function carregarHistoricoRiscoAutomaticamente() {
                 }
             }
             setTimeout(fatiarProcessamento, 5);
+        }
+
+        function obterVelocidadePadraoPorTipoVia(properties) {
+            // Quando a via não tem "maxspeed" cadastrado no GeoJSON, adota um padrão
+            // conforme o tipo de rodovia (highway do OSM/IBGE) em vez de um valor fixo.
+            var tiposRodovia = ["motorway", "trunk", "primary", "motorway_link", "trunk_link", "primary_link"];
+            var tipo = (properties && properties.highway) ? String(properties.highway).toLowerCase() : "";
+            return tiposRodovia.indexOf(tipo) !== -1 ? 80 : 60;
         }
 
         function extrairVelocidadeNumerica(v) {
@@ -2769,7 +2798,7 @@ function exportarTabelaParaPDF() {
 
             var velOriginal = extrairVelocidadeNumerica(p.maxspeed);
             var semLimite = !velOriginal;
-            var velBase = velOriginal || 60; // mesmo padrão adotado no processamento da telemetria
+            var velBase = velOriginal || obterVelocidadePadraoPorTipoVia(p); // mesmo padrão adotado no processamento da telemetria
 
             // Mesmas regras especiais aplicadas no processamento (CTB Caminhão / Operação MBF)
             var elCtb = document.getElementById('chk-ctb-caminhao');
