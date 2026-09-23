@@ -242,7 +242,7 @@
 <body>
 
     <header>
-        <h1>🚗 Auditor de Telemetria V31.5 </h1>
+        <h1>🚗 Auditor de Telemetria V31.8 </h1>
         <div style="font-size: 0.75rem; opacity: 0.85;">Mapeamento de excessos de velocidades acima do limite</div>
     </div>
     <button id="btn-sobre" style="
@@ -339,6 +339,10 @@
                     <div class="toggle-row" style="color: #65a30d;">
                         <label style="cursor:pointer;" for="chk-ignorar-fora-malha">❌ Ignorar "Via Fora da Malha"</label>
                         <input type="checkbox" id="chk-ignorar-fora-malha" checked style="transform: scale(1.1);">
+                    </div>
+                    <div class="toggle-row" style="color: #a16207;">
+                        <label style="cursor:pointer;" for="chk-ignorar-sem-maxspeed">🚫 Ignorar "Vias sem Maxspeed"</label>
+                        <input type="checkbox" id="chk-ignorar-sem-maxspeed" style="transform: scale(1.1);">
                     </div>
                     <div class="toggle-row" style="color: #0284c7;">
                         <label style="cursor:pointer;" for="chk-ignorar-tolerancia">📏 Ignorar Margem de Tolerância </label>
@@ -456,6 +460,7 @@
                     </div>
                     
                     <div class="table-scroll" id="div-captura-tabela">
+                        <div id="legenda-asterisco-maxspeed" style="font-size:0.7rem; color:#a16207; padding:2px 4px 6px;">⚠️ <b>(!)</b> = Limite estimado (via sem "maxspeed" cadastrado no GeoJSON)<br><span style="color:#eab308; font-weight:bold;">⚠ Área de Risco</span> = Área de Risco (Histórico PRF) identificada nas proximidades — visível quando "HISTÓRICO DE RISCO" estiver marcado</div>
                         <table id="tabela-infracoes">
                             <thead>
                                 <tr>
@@ -790,6 +795,8 @@ async function carregarHistoricoRiscoAutomaticamente() {
 
             listaDeExcessosOcorridos.forEach((exc) => atualizarVisualMarcadorClima(exc));
 
+            atualizarTabelaDOM();
+
             renderizarAreasRiscoNoMapa(ativo);
 
             var legRisco = document.getElementById('legenda-area-risco');
@@ -847,7 +854,7 @@ async function carregarHistoricoRiscoAutomaticamente() {
             map = L.map('map', {
                 center: [-15.7801, -47.9292],
                 zoom: 4,
-                layers: [googleVias]
+                layers: [googleHibrido]
             });
 
             var mapasBase = {
@@ -1195,6 +1202,7 @@ async function carregarHistoricoRiscoAutomaticamente() {
             var raioMaxMetros = parseFloat(document.getElementById('cfg-raio').value) || 25;
             var ignorarSemNome = document.getElementById('chk-ignorar-sem-nome').checked;
             var ignorarForaMalha = document.getElementById('chk-ignorar-fora-malha').checked;
+            var ignorarSemMaxspeed = document.getElementById('chk-ignorar-sem-maxspeed').checked;
             var modoRegra = document.getElementById('cfg-modo-regra').value;
             var velDefiDefinida = parseFloat(document.getElementById('cfg-vel-Defi').value) || 88;
             
@@ -1256,8 +1264,11 @@ async function carregarHistoricoRiscoAutomaticamente() {
                     var dataHoraFormatada = formatarDataHora(dataHoraBrutaOriginal);
                     
                     // Extrai o limite cartográfico original da via.
-                    // Sem "maxspeed" no GeoJSON, adota o padrão por tipo de via (rodovias: 80 km/h; demais: 60 km/h).
-                    var velMaxViaOriginal = viaIdentificada ? extrairVelocidadeNumerica(viaIdentificada.properties.maxspeed) : null;
+                    // Sem "maxspeed" no GeoJSON, adota o padrão por tipo de via (rodovias: 80 km/h; demais: 60 km/h)
+                    // e marca a via como "sem maxspeed cadastrado" (usado no filtro e no "*" da tabela).
+                    var maxspeedBrutoVia = viaIdentificada ? extrairVelocidadeNumerica(viaIdentificada.properties.maxspeed) : null;
+                    var isSemMaxspeed = viaIdentificada ? !maxspeedBrutoVia : false;
+                    var velMaxViaOriginal = maxspeedBrutoVia;
                     if(!velMaxViaOriginal) velMaxViaOriginal = obterVelocidadePadraoPorTipoVia(viaIdentificada ? viaIdentificada.properties : null);
 
                     // APLICAÇÃO DAS REGRAS ESPECIAIS (CTB Caminhão e Operação MBF)
@@ -1286,7 +1297,8 @@ async function carregarHistoricoRiscoAutomaticamente() {
                         ts: paraTimestampComparavel(dataHoraBrutaOriginal),
                         horario: dataHoraFormatada,
                         cidadeSheet: cidadePlanilha,
-                        ufSheet: ufPlanilha
+                        ufSheet: ufPlanilha,
+                        velocidade: velReg
                     });
 
                     var isForaMalha = (viaFinal === "Via Fora da Malha");
@@ -1302,9 +1314,10 @@ async function carregarHistoricoRiscoAutomaticamente() {
                         if (modoRegra === 'ambos') {
                             var ignoraPorMalha = ignorarForaMalha && isForaMalha;
                             var ignoraPorNome = ignorarSemNome && isSemNome;
+                            var ignoraPorMaxspeed = ignorarSemMaxspeed && isSemMaxspeed;
                             
                             var infracaoPelaVia = false;
-                            if (!ignoraPorMalha && !ignoraPorNome && velReg > velMaxViaRegulamentada) {
+                            if (!ignoraPorMalha && !ignoraPorNome && !ignoraPorMaxspeed && velReg > velMaxViaRegulamentada) {
                                 var deltaExcessoVia = velReg - velMaxViaRegulamentada;
                                 var forcarIgnorarToleranteVia = ignorarMargemTolerada || (mbfAtivo && velReg > 80);
 
@@ -1329,8 +1342,9 @@ async function carregarHistoricoRiscoAutomaticamente() {
                     else if (modoRegra === 'via' || modoRegra === 'ambos') {
                         var ignoraPorMalha = ignorarForaMalha && isForaMalha;
                         var ignoraPorNome = ignorarSemNome && isSemNome;
+                        var ignoraPorMaxspeed = ignorarSemMaxspeed && isSemMaxspeed;
 
-                        if (!ignoraPorMalha && !ignoraPorNome) {
+                        if (!ignoraPorMalha && !ignoraPorNome && !ignoraPorMaxspeed) {
                             if (velReg > velMaxViaRegulamentada) {
                                 var deltaExcesso = velReg - velMaxViaRegulamentada;
                                 var forcarIgnorarTolerante = ignorarMargemTolerada || (mbfAtivo && velReg > 80);
@@ -1358,7 +1372,7 @@ async function carregarHistoricoRiscoAutomaticamente() {
                         picosDeExcessoEstatistica++;
                         var pct = ((velReg - limiteConsiderado) / limiteConsiderado) * 100;
                         var uidMarker = Math.random().toString(36).substr(2, 9);
-                        var registro = { uid: uidMarker, lat, lon, velReg, velMaxVia: limiteConsiderado, pct, horario: dataHoraFormatada, nomeVia: viaFinal, cidade: cidadeFinal, marker: null, clima: "⏳", climaTexto: "Aguardando..." };
+                        var registro = { uid: uidMarker, lat, lon, velReg, velMaxVia: limiteConsiderado, semMaxspeed: isSemMaxspeed, pct, horario: dataHoraFormatada, nomeVia: viaFinal, cidade: cidadeFinal, marker: null, clima: "⏳", climaTexto: "Aguardando..." };
                         
                         registro.marker = plotarMarcadorMapa(registro, true, pct);
                         listaDeExcessosOcorridos.push(registro);
@@ -1448,6 +1462,26 @@ async function carregarHistoricoRiscoAutomaticamente() {
                 }
             }
             setTimeout(fatiarProcessamento, 5);
+        }
+
+        function formatarNomeVia(exc, comHtml) {
+            // Quando o ponto cruza com uma Área de Risco histórica (PRF) e o módulo está ativo,
+            // destaca isso junto ao nome da via.
+            if (!exc.temAreaRisco) return exc.nomeVia;
+            if (comHtml === false) {
+                // Clipboard/PDF: evita emoji (jsPDF não renderiza corretamente caracteres fora do padrão Latin), usa só texto.
+                return `${exc.nomeVia} (Área de Risco)`;
+            }
+            return `${exc.nomeVia} <span title="Área de Risco (Histórico PRF) identificada nas proximidades" style="color:#eab308; font-weight:bold;">⚠ Área de Risco</span>`;
+        }
+
+        function formatarLimiteVia(exc, comHtml) {
+            // Quando o limite é uma estimativa (via sem "maxspeed" no GeoJSON), destaca com um alerta "(!)"
+            // em amarelo (mesmo tamanho da fonte) nas tabelas em HTML; nos exports em texto puro (clipboard/PDF)
+            // usa "(!)" sem cor, já que esses formatos não suportam estilo por caractere.
+            if (!exc.semMaxspeed) return `${exc.velMaxVia} km/h`;
+            if (comHtml === false) return `${exc.velMaxVia} km/h (!)`;
+            return `${exc.velMaxVia} km/h <span style="color:#ca8a04; font-weight:bold;" title="Limite estimado — via sem &quot;maxspeed&quot; cadastrado no GeoJSON">(!)</span>`;
         }
 
         function obterVelocidadePadraoPorTipoVia(properties) {
@@ -1770,12 +1804,16 @@ async function carregarHistoricoRiscoAutomaticamente() {
             marcadorUltimaLocalizacao = L.marker([ponto.lat, ponto.lon], { icon: iconeUltimaLoc, zIndexOffset: 2000 });
 
             var cidadeTxt = ponto.cidadeSheet ? (ponto.ufSheet ? `${ponto.cidadeSheet}/${ponto.ufSheet}` : ponto.cidadeSheet) : "";
+            var velocidadeTxt = (ponto.velocidade !== undefined && ponto.velocidade !== null && !isNaN(ponto.velocidade)) ? `${ponto.velocidade} km/h` : "—";
+            var urlGoogleMaps = `https://www.google.com/maps?q=${ponto.lat},${ponto.lon}`;
             marcadorUltimaLocalizacao.bindPopup(`
                 <div style="font-size:0.75rem; line-height:1.4; min-width:180px; color:#1e293b;">
                     <b style="color:#0f172a;">🏁 Última Localização Registrada</b><br>
                     ${cidadeTxt ? `<b>🏙️ Cidade:</b> ${cidadeTxt}<br>` : ''}
                     <b>⏱️ Data/Hora:</b> ${ponto.horario || '—'}<br>
+                    <b>🚗 Velocidade:</b> ${velocidadeTxt}<br>
                     <b>📍 Coordenadas:</b> ${ponto.lat.toFixed(6)}, ${ponto.lon.toFixed(6)}<br>
+                    <a href="${urlGoogleMaps}" target="_blank" rel="noopener" style="display:inline-block; margin-top:6px; background:#2563eb; color:#ffffff; text-decoration:none; padding:4px 8px; border-radius:4px; font-size:0.7rem; font-weight:bold;">🗺️ Abrir no Google Maps</a>
                 </div>
             `);
             marcadorUltimaLocalizacao.addTo(map);
@@ -1947,15 +1985,16 @@ async function carregarHistoricoRiscoAutomaticamente() {
 
             listaDeExcessosOcorridos.forEach((exc, idx) => {
                 if(!exc.uid) exc.uid = Math.random().toString(36).substr(2, 9);
-                var styleCritico = exc.pct >= 50 ? "background:#fff5f5; font-weight:bold;" : "";
+                var estiloCritico = exc.pct >= 50 ? "font-weight:bold;" : "";
+                var estiloRisco = exc.temAreaRisco ? "background:#fff7ed; box-shadow: inset 4px 0 0 0 #ea580c;" : (exc.pct >= 50 ? "background:#fff5f5;" : "");
                 var tr = document.createElement('tr');
                 tr.id = "tr-geral-" + idx;
-                tr.style = styleCritico;
+                tr.style = estiloCritico + estiloRisco;
                 tr.innerHTML = `
                     <td title="${exc.cidade}">${exc.cidade}</td>
-                    <td title="${exc.nomeVia}">${exc.nomeVia}</td>
+                    <td title="${exc.nomeVia}">${formatarNomeVia(exc)}</td>
                     <td>${exc.horario}</td>
-                    <td>${exc.velMaxVia} km/h</td>
+                    <td>${formatarLimiteVia(exc)}</td>
                     <td style="color:#dc2626;">${exc.velReg} km/h (+${exc.pct.toFixed(0)}%)</td>
                     <td class="col-clima" id="td-clima-${exc.uid}" style="font-size: 1.1rem; font-weight: normal;" title="${exc.climaTexto || ''}">${exc.clima || '⏳'}</td>
                     <td style="text-align:center;" class="col-foco-ignore"><button style="cursor:pointer; background:none; border:none; font-size:1.1rem; transition:transform 0.1s;" onmouseover="this.style.transform='scale(1.2)'" onmouseout="this.style.transform='scale(1)'" title="Focar no mapa" onclick="focarPontoGeral(${idx})">🎯</button></td>
@@ -2307,14 +2346,14 @@ function obterSimboloClimaOpenMeteo(code, isDay) {
 
             listaDeExcessosOcorridos.forEach(e => {
                 var textoClimaCopia = exibirClimaAtivo ? `${e.clima} ${e.climaTexto}` : '';
-                plainText += `${e.cidade}\t${e.nomeVia}\t${e.horario}\t${e.velMaxVia} km/h\t${e.velReg} km/h (+${e.pct.toFixed(0)}%)` + (exibirClimaAtivo ? `\t${textoClimaCopia}\n` : '\n');
+                plainText += `${e.cidade}\t${formatarNomeVia(e, false)}\t${e.horario}\t${formatarLimiteVia(e, false)}\t${e.velReg} km/h (+${e.pct.toFixed(0)}%)` + (exibirClimaAtivo ? `\t${textoClimaCopia}\n` : '\n');
                 
-                var corFundoLinha = e.pct >= 50 ? "background-color: #fef2f2;" : "background-color: #ffffff;";
+                var corFundoLinha = e.temAreaRisco ? "background-color: #fff7ed;" : (e.pct >= 50 ? "background-color: #fef2f2;" : "background-color: #ffffff;");
                 htmlText += `<tr style="${corFundoLinha}">
                     <td>${e.cidade}</td>
-                    <td>${e.nomeVia}</td>
+                    <td>${formatarNomeVia(e)}</td>
                     <td>${e.horario}</td>
-                    <td style="text-align: center;">${e.velMaxVia} km/h</td>
+                    <td style="text-align: center;">${formatarLimiteVia(e)}</td>
                     <td style="text-align: center; color: #b91c1c; font-weight: bold;">${e.velReg} km/h (+${e.pct.toFixed(0)}%)</td>
                     ${exibirClimaAtivo ? `<td style="text-align: center;">${textoClimaCopia}</td>` : ""}
                 </tr>`;
@@ -2655,9 +2694,9 @@ function exportarTabelaParaPDF() {
     var linhasTabela = listaDeExcessosOcorridos.map(exc => {
         var linha = [
             exc.cidade || "",
-            exc.nomeVia || "",
+            formatarNomeVia(exc, false),
             exc.horario || "",
-            `${exc.velMaxVia} km/h`,
+            `${formatarLimiteVia(exc, false)}`,
             `${exc.velReg} km/h (+${exc.pct.toFixed(0)}%)`
         ];
         if (exibirClima) linha.push(exc.climaTexto || exc.clima || "-");
