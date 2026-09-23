@@ -242,7 +242,7 @@
 <body>
 
     <header>
-        <h1>🚗 Auditor de Telemetria V31.8 </h1>
+        <h1>🚗 Auditor de Telemetria V31.9 </h1>
         <div style="font-size: 0.75rem; opacity: 0.85;">Mapeamento de excessos de velocidades acima do limite</div>
     </div>
     <button id="btn-sobre" style="
@@ -703,6 +703,21 @@ async function carregarHistoricoRiscoAutomaticamente() {
                     Math.sin(dLon / 2) * Math.sin(dLon / 2);
             var c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
             return R * c;
+        }
+
+        // Rumo (0-360°) do ponto 1 para o ponto 2
+        function calcularRumo(lat1, lon1, lat2, lon2) {
+            var toRad = Math.PI / 180, toDeg = 180 / Math.PI;
+            var y = Math.sin((lon2 - lon1) * toRad) * Math.cos(lat2 * toRad);
+            var x = Math.cos(lat1 * toRad) * Math.sin(lat2 * toRad) -
+                    Math.sin(lat1 * toRad) * Math.cos(lat2 * toRad) * Math.cos((lon2 - lon1) * toRad);
+            return (Math.atan2(y, x) * toDeg + 360) % 360;
+        }
+
+        // Menor diferença angular entre dois rumos (0-180°)
+        function diferencaAngular(rumoA, rumoB) {
+            var d = Math.abs(rumoA - rumoB) % 360;
+            return d > 180 ? 360 - d : d;
         }
 
         // Busca ocorrências históricas da PRF num raio (metros) ao redor de um ponto
@@ -1237,6 +1252,18 @@ async function carregarHistoricoRiscoAutomaticamente() {
                     var velReg = parseFloat(linha[cVel]);
 
                     if (isNaN(lat) || isNaN(lon)) continue;
+
+                    // Rumo do deslocamento (ponto anterior -> ponto atual), usado para não confundir
+                    // pistas separadas (ex.: rodovia duplicada) quando o GPS "pinga" na faixa errada.
+                    var pontoAnteriorTrajeto = vetorCoordenadasTrajeto.length > 0 ? vetorCoordenadasTrajeto[vetorCoordenadasTrajeto.length - 1] : null;
+                    var rumoMovimento = null;
+                    if (pontoAnteriorTrajeto) {
+                        var distDeslocamento = distanciaMetros(pontoAnteriorTrajeto[0], pontoAnteriorTrajeto[1], lat, lon);
+                        if (distDeslocamento >= 8) { // ignora ruído de GPS parado/quase parado
+                            rumoMovimento = calcularRumo(pontoAnteriorTrajeto[0], pontoAnteriorTrajeto[1], lat, lon);
+                        }
+                    }
+
                     vetorCoordenadasTrajeto.push([lat, lon]);
 
                     if (velReg > maiorVelocidadeEncontrada) maiorVelocidadeEncontrada = velReg;
@@ -1246,6 +1273,9 @@ async function carregarHistoricoRiscoAutomaticamente() {
                     var viaIdentificada = null;
 
                     if (baseViasSegmentadas.length > 0) {
+                        var PENALIDADE_CONTRAMAO_METROS = 60; // via de mão única em sentido oposto ao rumo perde prioridade
+                        var ANGULO_LIMITE_CONTRAMAO = 100; // graus de diferença acima do qual considera "sentido contrário"
+
                         baseViasSegmentadas.forEach(via => {
                             if (lon < via.expandedBbox[0] || lon > via.expandedBbox[2] || lat < via.expandedBbox[1] || lat > via.expandedBbox[3]) return;
 
@@ -1253,8 +1283,23 @@ async function carregarHistoricoRiscoAutomaticamente() {
                             var dist = projecao.properties.dist;
                             if (dist > raioMaxMetros) return;
 
-                            if (dist < menorCustoScore) {
-                                menorCustoScore = dist;
+                            var custo = dist;
+
+                            // Só aplica a checagem de sentido em vias de mão única (oneway), onde o sentido
+                            // de tráfego é conhecido pela ordem das coordenadas do GeoJSON.
+                            if (rumoMovimento !== null && via.properties && String(via.properties.oneway).toLowerCase() === "yes") {
+                                var idxSeg = projecao.properties.index;
+                                var coordsVia = via.geometry.coordinates;
+                                if (idxSeg != null && coordsVia[idxSeg] && coordsVia[idxSeg + 1]) {
+                                    var rumoVia = calcularRumo(coordsVia[idxSeg][1], coordsVia[idxSeg][0], coordsVia[idxSeg + 1][1], coordsVia[idxSeg + 1][0]);
+                                    if (diferencaAngular(rumoMovimento, rumoVia) > ANGULO_LIMITE_CONTRAMAO) {
+                                        custo += PENALIDADE_CONTRAMAO_METROS;
+                                    }
+                                }
+                            }
+
+                            if (custo < menorCustoScore) {
+                                menorCustoScore = custo;
                                 viaIdentificada = via;
                             }
                         });
