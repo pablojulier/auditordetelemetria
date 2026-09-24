@@ -242,7 +242,7 @@
 <body>
 
     <header>
-        <h1>🚗 Auditor de Telemetria V31.9 </h1>
+        <h1>🚗 Auditor de Telemetria V32 <span style="font-size:0.55em; font-weight:normal; opacity:0.75;">atualizado em 24/09/2026</span></h1>
         <div style="font-size: 0.75rem; opacity: 0.85;">Mapeamento de excessos de velocidades acima do limite</div>
     </div>
     <button id="btn-sobre" style="
@@ -350,7 +350,7 @@
                     </div>
                     <div class="toggle-row" style="color: #2563eb; background: #f0fdf4; padding: 4px; border-radius: 4px; border: 1px solid #bbf7d0; margin-top: 2px;">
                         <label style="cursor:pointer; font-weight: bold;" for="chk-ativar-clima">🌤️ Obter Clima Ocorrências (API)</label>
-                        <input type="checkbox" id="chk-ativar-clima" style="transform: scale(1.1);" onchange="alternarModuloClimaOcorrencias()">
+                        <input type="checkbox" id="chk-ativar-clima" style="transform: scale(1.1);" onchange="alternarModuloClimaOcorrencias()" checked>
                     </div>
                     <div class="toggle-row" style="color: #9a3412; background: #fff7ed; padding: 6px; border-radius: 4px; border: 1px solid #fed7aa; margin-bottom: 4px;">
                         <label style="cursor:pointer; font-weight: bold;" for="chk-historico-risco">🚧 HISTÓRICO DE RISCO <span class="help-icon" onclick="abrirAjuda('historico-risco')">?</span></label>
@@ -2984,6 +2984,14 @@ function exportarTabelaParaPDF() {
         }
 
         window.addEventListener('DOMContentLoaded', inicializarConsultaViaMapa);
+    </script>
+    <script>
+        // Sincroniza a UI com o checkbox "Obter Clima Ocorrências (API)" já vindo marcado por padrão
+        window.addEventListener('DOMContentLoaded', function() {
+            if (typeof alternarModuloClimaOcorrencias === 'function') {
+                alternarModuloClimaOcorrencias();
+            }
+        });
     </script>
 </body>
 </html>
