@@ -242,7 +242,7 @@
 <body>
 
     <header>
-        <h1>🚗 Auditor de Telemetria V32 <span style="font-size:0.55em; font-weight:normal; opacity:0.75;">atualizado em 24/09/2026</span></h1>
+        <h1>🚗 Auditor de Telemetria V32.1 <span style="font-size:0.55em; font-weight:normal; opacity:0.75;">atualizado em 25/09/2026</span></h1>
         <div style="font-size: 0.75rem; opacity: 0.85;">Mapeamento de excessos de velocidades acima do limite</div>
     </div>
     <button id="btn-sobre" style="
@@ -1532,7 +1532,7 @@ async function carregarHistoricoRiscoAutomaticamente() {
         function obterVelocidadePadraoPorTipoVia(properties) {
             // Quando a via não tem "maxspeed" cadastrado no GeoJSON, adota um padrão
             // conforme o tipo de rodovia (highway do OSM/IBGE) em vez de um valor fixo.
-            var tiposRodovia = ["motorway", "trunk", "primary", "motorway_link", "trunk_link", "primary_link"];
+            var tiposRodovia = ["motorway", "secondary", "trunk", "primary", "motorway_link", "trunk_link", "primary_link"];
             var tipo = (properties && properties.highway) ? String(properties.highway).toLowerCase() : "";
             return tiposRodovia.indexOf(tipo) !== -1 ? 80 : 60;
         }
