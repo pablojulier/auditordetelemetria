@@ -242,7 +242,7 @@
 <body>
 
     <header>
-        <h1>🚗 Auditor de Telemetria V32.1 <span style="font-size:0.55em; font-weight:normal; opacity:0.75;">atualizado em 25/09/2026</span></h1>
+        <h1>🚗 Auditor de Telemetria V32.2 <span style="font-size:0.55em; font-weight:normal; opacity:0.75;">atualizado em 25/09/2026</span></h1>
         <div style="font-size: 0.75rem; opacity: 0.85;">Mapeamento de excessos de velocidades acima do limite</div>
     </div>
     <button id="btn-sobre" style="
@@ -2552,6 +2552,12 @@ if (btnRiscoAnt && btnRiscoProx && navRiscoContador) {
         }
 
         function exportarGraficoParaPDF() {
+            obterPlacaParaRelatorio().then(function(placaInformada) {
+                _gerarPdfGraficoComPlaca(placaInformada);
+            });
+        }
+
+        function _gerarPdfGraficoComPlaca(placaInformada) {
     var chart = graficoInstancia;
     var canvasOrigem = document.getElementById('chartExcessosFaixas');
     if (!chart || !canvasOrigem) return;
@@ -2633,6 +2639,23 @@ if (btnRiscoAnt && btnRiscoProx && navRiscoContador) {
         pdf.text(textoPeriodo, margem, yAtual);
     }
 
+    // Placa do veículo (detectada automaticamente ou informada pelo usuário), alinhada à direita do título
+    if (placaInformada) {
+        pdf.setFont("Helvetica", "bold");
+        pdf.setFontSize(11);
+        var textoPlacaCab = "Placa: " + placaInformada;
+        pdf.text(textoPlacaCab, larguraPagina - margem - pdf.getTextWidth(textoPlacaCab), 14);
+    }
+
+    // Origem / Destino / Distância percorrida (dados de GPS), quando disponíveis
+    var textoRotaCab = montarLinhaRotaParaPDF();
+    if (textoRotaCab) {
+        yAtual += 6;
+        pdf.setFont("Helvetica", "normal");
+        pdf.setFontSize(9.5);
+        pdf.text(textoRotaCab, margem, yAtual);
+    }
+
     var elPicos = document.getElementById('stat-total-picos');
     var elMax = document.getElementById('stat-max-velocidade');
     var valPicos = elPicos ? elPicos.textContent.trim() : "0";
@@ -2687,14 +2710,19 @@ if (btnRiscoAnt && btnRiscoProx && navRiscoContador) {
     if (hPdf > alturaMax) { hPdf = alturaMax; wPdf = hPdf / proporcao; }
 
     pdf.addImage(imgData, 'JPEG', margem, yImagem, wPdf, hPdf, undefined, 'FAST');
-    pdf.save('grafico-velocidades.pdf');
+    pdf.save('grafico-velocidades' + (placaInformada ? ('-' + placaInformada) : '') + '.pdf');
 }
 function exportarTabelaParaPDF() {
     if (!listaDeExcessosOcorridos || listaDeExcessosOcorridos.length === 0) {
         alert("Não há dados de excessos para exportar.");
         return;
     }
+    obterPlacaParaRelatorio().then(function(placaInformada) {
+        _gerarPdfTabelaComPlaca(placaInformada);
+    });
+}
 
+function _gerarPdfTabelaComPlaca(placaInformada) {
     var { jsPDF } = window.jspdf ? window.jspdf : { jsPDF: window.jsPDF };
     if (!jsPDF) {
         alert("Erro: A biblioteca jsPDF não está carregada.");
@@ -2750,12 +2778,14 @@ function exportarTabelaParaPDF() {
 
     var larguraPagina = pdf.internal.pageSize.getWidth();
     var alturaPagina = pdf.internal.pageSize.getHeight();
+    var textoRotaTabela = montarLinhaRotaParaPDF();
+    var startYTabela = textoRotaTabela ? 25 : 18;
 
     pdf.autoTable({
         head: [colunas],
         body: linhasTabela,
-        startY: 18,
-        margin: { left: 8, right: 8, top: 18, bottom: 12 },
+        startY: startYTabela,
+        margin: { left: 8, right: 8, top: startYTabela, bottom: 12 },
         theme: 'grid',
         tableWidth: 'auto',
         styles: {
@@ -2795,6 +2825,18 @@ function exportarTabelaParaPDF() {
             pdf.setFontSize(11);
             pdf.text(tituloRelatorio, 8, 11);
 
+            if (placaInformada) {
+                pdf.setFontSize(10);
+                var textoPlacaTabela = "Placa: " + placaInformada;
+                pdf.text(textoPlacaTabela, larguraPagina - 8 - pdf.getTextWidth(textoPlacaTabela), 11);
+            }
+
+            if (textoRotaTabela) {
+                pdf.setFont("Helvetica", "normal");
+                pdf.setFontSize(8);
+                pdf.text(textoRotaTabela, 8, 16);
+            }
+
             pdf.setFont("Helvetica", "normal");
             pdf.setFontSize(7.5);
             var paginaAtual = pdf.internal.getNumberOfPages();
@@ -2802,8 +2844,130 @@ function exportarTabelaParaPDF() {
         }
     });
 
-    pdf.save('tabela-excessos.pdf');
+    pdf.save('tabela-excessos' + (placaInformada ? ('-' + placaInformada) : '') + '.pdf');
 }
+    </script>
+
+    <script>
+        /* =====================================================================
+           PLACA DO VEÍCULO E DADOS DE ROTA NOS RELATÓRIOS PDF (recurso independente)
+           Usado por exportarGraficoParaPDF() e exportarTabelaParaPDF() para compor
+           o cabeçalho dos relatórios. Não altera nenhuma outra função do painel.
+           ===================================================================== */
+
+        // Reconhece placas no padrão antigo (ABC1234) e Mercosul (ABC1D23), com ou sem hífen
+        function extrairPlacaDeTexto(texto) {
+            if (!texto) return null;
+            var regex = /(?:^|[^A-Za-z0-9])([A-Za-z]{3})-?(\d[A-Za-z]\d{2}|\d{4})(?:[^A-Za-z0-9]|$)/;
+            var m = String(texto).match(regex);
+            if (!m) return null;
+            return (m[1] + '-' + m[2]).toUpperCase();
+        }
+
+        // Procura a placa: 1) no nome do arquivo de posições carregado; 2) nos nomes das colunas
+        // da planilha; 3) no conteúdo de uma coluna cujo cabeçalho contenha "placa"
+        function buscarPlacaAutomatica() {
+            var lbl = document.getElementById('label-xlsx');
+            var nomeArquivo = lbl ? lbl.textContent.replace(/^Arquivo:\s*/i, '').trim() : "";
+            var achada = extrairPlacaDeTexto(nomeArquivo);
+            if (achada) return achada;
+
+            if (typeof dadosTelemetriaBrutos !== 'undefined' && dadosTelemetriaBrutos && dadosTelemetriaBrutos.length > 0) {
+                var colunas = Object.keys(dadosTelemetriaBrutos[0]);
+
+                for (var i = 0; i < colunas.length; i++) {
+                    achada = extrairPlacaDeTexto(colunas[i]);
+                    if (achada) return achada;
+                }
+
+                var colPlaca = colunas.find(function(c) { return c.toLowerCase().indexOf('placa') !== -1; });
+                if (colPlaca) {
+                    for (var r = 0; r < dadosTelemetriaBrutos.length; r++) {
+                        var valorBruto = dadosTelemetriaBrutos[r][colPlaca];
+                        achada = extrairPlacaDeTexto(String(valorBruto || ''));
+                        if (achada) return achada;
+                        if (valorBruto && String(valorBruto).trim() !== '') return String(valorBruto).trim().toUpperCase();
+                    }
+                }
+            }
+            return null;
+        }
+
+        // Resolve a placa a usar no relatório: automática, ou perguntada ao usuário (campo opcional)
+        function obterPlacaParaRelatorio() {
+            var placaAutomatica = buscarPlacaAutomatica();
+            if (placaAutomatica) return Promise.resolve(placaAutomatica);
+            return abrirModalPlacaManual();
+        }
+
+        function abrirModalPlacaManual() {
+            return new Promise(function(resolve) {
+                var overlay = document.createElement('div');
+                overlay.style.cssText = 'position:fixed; inset:0; background:rgba(15,23,42,0.55); z-index:99999; display:flex; align-items:center; justify-content:center;';
+
+                var caixa = document.createElement('div');
+                caixa.style.cssText = 'background:#ffffff; border-radius:10px; padding:20px 22px; width:300px; max-width:90vw; box-shadow:0 10px 30px rgba(0,0,0,0.3); font-family:inherit;';
+
+                var titulo = document.createElement('div');
+                titulo.textContent = '🚚 Placa do veículo';
+                titulo.style.cssText = 'font-weight:bold; font-size:15px; margin-bottom:6px; color:#0f172a;';
+
+                var sub = document.createElement('div');
+                sub.textContent = 'Não foi possível identificar a placa automaticamente. Informe (opcional) para incluir no relatório:';
+                sub.style.cssText = 'font-size:12px; color:#64748b; margin-bottom:10px; line-height:1.4;';
+
+                var input = document.createElement('input');
+                input.type = 'text';
+                input.placeholder = 'Ex: ABC-1234';
+                input.maxLength = 8;
+                input.style.cssText = 'width:100%; box-sizing:border-box; padding:8px 10px; border:1px solid #cbd5e1; border-radius:6px; font-size:14px; text-transform:uppercase; margin-bottom:14px;';
+
+                var linhaBotoes = document.createElement('div');
+                linhaBotoes.style.cssText = 'display:flex; justify-content:flex-end;';
+
+                var btnOk = document.createElement('button');
+                btnOk.textContent = 'OK';
+                btnOk.style.cssText = 'background:#2563eb; color:#fff; border:none; border-radius:6px; padding:7px 18px; font-size:13px; font-weight:600; cursor:pointer;';
+
+                linhaBotoes.appendChild(btnOk);
+                caixa.appendChild(titulo);
+                caixa.appendChild(sub);
+                caixa.appendChild(input);
+                caixa.appendChild(linhaBotoes);
+                overlay.appendChild(caixa);
+                document.body.appendChild(overlay);
+                input.focus();
+
+                function concluir() {
+                    var valor = input.value.trim();
+                    var formatada = valor ? (extrairPlacaDeTexto(valor) || valor.toUpperCase()) : "";
+                    document.body.removeChild(overlay);
+                    resolve(formatada);
+                }
+
+                btnOk.addEventListener('click', concluir);
+                input.addEventListener('keydown', function(e) { if (e.key === 'Enter') concluir(); });
+            });
+        }
+
+        // Monta a linha "Origem / Destino / Distância percorrida" para os cabeçalhos do PDF,
+        // lendo o painel já preenchido a partir dos dados de GPS da telemetria
+        function montarLinhaRotaParaPDF() {
+            var elO = document.getElementById('route-info-origem');
+            var elD = document.getElementById('route-info-destino');
+            var elDist = document.getElementById('route-info-distancia');
+            var origem = elO ? elO.textContent.trim() : "";
+            var destino = elD ? elD.textContent.trim() : "";
+            var distancia = elDist ? elDist.textContent.trim() : "";
+
+            function valido(v) { return v && v !== '—' && v.indexOf('localizando') === -1; }
+
+            var partes = [];
+            if (valido(origem)) partes.push("Origem: " + origem);
+            if (valido(destino)) partes.push("Destino: " + destino);
+            if (valido(distancia)) partes.push("Distância percorrida: " + distancia);
+            return partes.join("     |     ");
+        }
     </script>
 
     <script>
