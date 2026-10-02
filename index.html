@@ -243,7 +243,7 @@
 <body>
 
     <header>
-        <h1>🚗 Auditor de Telemetria V32.3 <span style="font-size:0.55em; font-weight:normal; opacity:0.75;">atualizado em 02/10/2026</span></h1>
+        <h1>🚗 Auditor de Telemetria V32.4 <span style="font-size:0.55em; font-weight:normal; opacity:0.75;">atualizado em 02/10/2026</span></h1>
         <div style="font-size: 0.75rem; opacity: 0.85;">Mapeamento de excessos de velocidades acima do limite</div>
     </div>
     <button id="btn-sobre" style="
@@ -327,7 +327,7 @@
                     <div class="toggle-row" style="color: #0369a1; background: #e0f2fe; padding: 6px; border-radius: 4px; border: 1px solid #bae6fd; margin-bottom: 4px;">
                         <label style="cursor:pointer; font-weight: bold;" for="chk-excesso-chuva">🌧️ Excessos na chuva (acima de)</label>
                         <span style="display:flex; align-items:center; gap:4px;">
-                            <input type="number" id="cfg-vel-chuva" value="72" min="1" max="77" style="width:52px;" title="Máximo aceito: 77 km/h" oninput="if(parseFloat(this.value)>77)this.value=77;">
+                            <input type="number" id="cfg-vel-chuva" value="72" min="1" max="89" style="width:52px;" title="Máximo aceito: 89 km/h" oninput="if(parseFloat(this.value)>89)this.value=89;">
                             <span style="font-size:0.75rem;">km/h</span>
                             <input type="checkbox" id="chk-excesso-chuva" style="transform: scale(1.2);">
                         </span>
@@ -1243,7 +1243,7 @@ async function carregarHistoricoRiscoAutomaticamente() {
 
             // Ativação da Regra de "Excessos na Chuva" (velocidade acima do valor configurado + chuva >= 1mm)
             var chuvaAtiva = document.getElementById('chk-excesso-chuva').checked;
-            var velChuvaDefinida = Math.min(77, Math.max(1, parseFloat(document.getElementById('cfg-vel-chuva').value) || 72));
+            var velChuvaDefinida = Math.min(89, Math.max(1, parseFloat(document.getElementById('cfg-vel-chuva').value) || 72));
 
             var cLat = colunasMapeadas.lat, cLon = colunasMapeadas.lon;
             var cVel = colunasMapeadas.velocidade, cTime = colunasMapeadas.dataHora;
