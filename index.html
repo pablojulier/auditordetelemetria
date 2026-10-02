@@ -34,6 +34,7 @@
             --excesso-baixo: #f97316;
             --excesso-medio: #ef4444;
             --excesso-alto: #7f1d1d;
+            --excesso-chuva: #0ea5e9;
         }
 
         
@@ -242,7 +243,7 @@
 <body>
 
     <header>
-        <h1>🚗 Auditor de Telemetria V32.2 <span style="font-size:0.55em; font-weight:normal; opacity:0.75;">atualizado em 25/09/2026</span></h1>
+        <h1>🚗 Auditor de Telemetria V32.3 <span style="font-size:0.55em; font-weight:normal; opacity:0.75;">atualizado em 02/10/2026</span></h1>
         <div style="font-size: 0.75rem; opacity: 0.85;">Mapeamento de excessos de velocidades acima do limite</div>
     </div>
     <button id="btn-sobre" style="
@@ -321,6 +322,15 @@
                     <div class="toggle-row" style="color: #4338ca; background: #e0e7ff; padding: 6px; border-radius: 4px; border: 1px solid #c7d2fe; margin-bottom: 4px;">
                         <label style="cursor:pointer; font-weight: bold;" for="chk-ctb-caminhao">🚚 Limite CTB Caminhão (>90 km/h)</label>
                         <input type="checkbox" id="chk-ctb-caminhao" style="transform: scale(1.2);" checked>
+                    </div>
+
+                    <div class="toggle-row" style="color: #0369a1; background: #e0f2fe; padding: 6px; border-radius: 4px; border: 1px solid #bae6fd; margin-bottom: 4px;">
+                        <label style="cursor:pointer; font-weight: bold;" for="chk-excesso-chuva">🌧️ Excessos na chuva (acima de)</label>
+                        <span style="display:flex; align-items:center; gap:4px;">
+                            <input type="number" id="cfg-vel-chuva" value="72" min="1" max="77" style="width:52px;" title="Máximo aceito: 77 km/h" oninput="if(parseFloat(this.value)>77)this.value=77;">
+                            <span style="font-size:0.75rem;">km/h</span>
+                            <input type="checkbox" id="chk-excesso-chuva" style="transform: scale(1.2);">
+                        </span>
                     </div>
 
                     <div class="toggle-row" style="color: #6b21a8; background: #f3e8ff; padding: 6px; border-radius: 4px; border: 1px solid #e9d5ff; margin-bottom: 4px;">
@@ -426,6 +436,7 @@
                     <div class="legend-item"><span class="legend-color" style="background:var(--excesso-baixo);"></span> Excesso > 10%</div>
                     <div class="legend-item"><span class="legend-color" style="background:var(--excesso-medio);"></span> Excesso > 20%</div>
                     <div class="legend-item"><span class="legend-color" style="background:var(--excesso-alto);"></span> Crítico ≥ 50%</div>
+                    <div class="legend-item"><span class="legend-color" style="background:var(--excesso-chuva);"></span> Excessos na Chuva</div>
                     <div class="legend-item" id="legenda-area-risco" style="display:none;"><span class="risco-area-legend-swatch"></span> Área de Risco Histórica (PRF)</div>
                     <div class="legend-item" id="legenda-cruzamento-risco" style="display:none;"><span class="risco-cruzamento-legend-swatch"></span> Excesso em Área de Risco</div>
                     
@@ -845,6 +856,7 @@ async function carregarHistoricoRiscoAutomaticamente() {
         var listaDeExcessosOcorridos = [];
         var listaDeExcessosCriticos = []; 
         var historicoLinhaGrafico = []; 
+        var candidatosExcessoChuva = []; // pontos abaixo do limite da via/definido, mas candidatos a excesso por causa da chuva
         
         var MAPA_DICIONARIO_CLIMA = {
     "☀️": "Céu Limpo (Dia)",
@@ -1206,6 +1218,7 @@ async function carregarHistoricoRiscoAutomaticamente() {
             listaDeExcessosCriticos = [];
             listaDeExcessosEmAreaRisco = [];
             historicoLinhaGrafico = [];
+            candidatosExcessoChuva = [];
             indiceGeralAtual = -1;
             indiceCriticoAtual = -1;
             indiceRiscoAtual = -1;
@@ -1227,6 +1240,10 @@ async function carregarHistoricoRiscoAutomaticamente() {
             // Ativação da Regra do CTB para Caminhões (>90 km/h) e Operação MBF (>80 km/h)
             var ctbCaminhaoAtivo = document.getElementById('chk-ctb-caminhao').checked;
             var mbfAtivo = document.getElementById('chk-operacao-mbf').checked;
+
+            // Ativação da Regra de "Excessos na Chuva" (velocidade acima do valor configurado + chuva >= 1mm)
+            var chuvaAtiva = document.getElementById('chk-excesso-chuva').checked;
+            var velChuvaDefinida = Math.min(77, Math.max(1, parseFloat(document.getElementById('cfg-vel-chuva').value) || 72));
 
             var cLat = colunasMapeadas.lat, cLon = colunasMapeadas.lon;
             var cVel = colunasMapeadas.velocidade, cTime = colunasMapeadas.dataHora;
@@ -1406,12 +1423,18 @@ async function carregarHistoricoRiscoAutomaticamente() {
                         limiteConsiderado = velDefiDefinida;
                     }
 
+                    var idxHistoricoAtual = historicoLinhaGrafico.length;
                     historicoLinhaGrafico.push({ 
                         vel: velReg, 
                         limite: limiteConsiderado, 
                         excesso: decissaoInfracao, 
                         hora: dataHoraFormatada 
                     });
+
+                    // Candidato a "Excesso na Chuva": só entra aqui quando o ponto NÃO é excesso pela
+                    // regra normal (via/definido) e o limite normal é maior que o valor configurado para
+                    // chuva — ou seja, é um excesso que só existe por causa da chuva, não detectado antes.
+                    var candidatoChuva = chuvaAtiva && !decissaoInfracao && velReg > velChuvaDefinida && limiteConsiderado > velChuvaDefinida;
 
                     if (decissaoInfracao) {
                         picosDeExcessoEstatistica++;
@@ -1423,6 +1446,10 @@ async function carregarHistoricoRiscoAutomaticamente() {
                         listaDeExcessosOcorridos.push(registro);
                         
                         if (pct >= 50) listaDeExcessosCriticos.push(registro);
+                    } else if (candidatoChuva) {
+                        // Marcador provisório (velocidade regular); some/vira excesso se a chuva for confirmada na API
+                        var markerProvisorioChuva = plotarMarcadorMapa({ uid: Math.random().toString(36).substr(2, 9), lat, lon, velReg, velMaxVia: limiteConsiderado, horario: dataHoraFormatada, nomeVia: viaFinal, cidade: cidadeFinal }, false, 0);
+                        candidatosExcessoChuva.push({ lat, lon, velReg, horario: dataHoraFormatada, nomeVia: viaFinal, cidade: cidadeFinal, velMaxVia: velChuvaDefinida, idxHistorico: idxHistoricoAtual, markerProvisorio: markerProvisorioChuva });
                     } else {
                         plotarMarcadorMapa({ uid: Math.random().toString(36).substr(2, 9), lat, lon, velReg, velMaxVia: limiteConsiderado, horario: dataHoraFormatada, nomeVia: viaFinal, cidade: cidadeFinal }, false, 0);
                     }
@@ -1499,6 +1526,10 @@ async function carregarHistoricoRiscoAutomaticamente() {
                             consultarClimaApiOpenMeteo();
                         }
                     }
+
+                    if (candidatosExcessoChuva.length > 0) {
+                        processarCandidatosExcessoChuva();
+                    }
                     if (listaDeExcessosCriticos.length > 0) indiceCriticoAtual = 0;
                     
                     alternarHistoricoRisco();
@@ -1510,14 +1541,24 @@ async function carregarHistoricoRiscoAutomaticamente() {
         }
 
         function formatarNomeVia(exc, comHtml) {
+            var nomeBase = exc.nomeVia;
+
+            // Excesso identificado apenas por causa da chuva (velocidade abaixo do limite normal,
+            // mas acima do limite configurado para chuva, com precipitação >= 1mm confirmada)
+            if (exc.isChuva) {
+                nomeBase = (comHtml === false)
+                    ? `EXCESSOS NA CHUVA - ${exc.nomeVia}`
+                    : `<span style="color:#0369a1; font-weight:bold;">🌧️ EXCESSOS NA CHUVA</span> — ${exc.nomeVia}`;
+            }
+
             // Quando o ponto cruza com uma Área de Risco histórica (PRF) e o módulo está ativo,
             // destaca isso junto ao nome da via.
-            if (!exc.temAreaRisco) return exc.nomeVia;
+            if (!exc.temAreaRisco) return nomeBase;
             if (comHtml === false) {
                 // Clipboard/PDF: evita emoji (jsPDF não renderiza corretamente caracteres fora do padrão Latin), usa só texto.
-                return `${exc.nomeVia} (Área de Risco)`;
+                return `${nomeBase} (Área de Risco)`;
             }
-            return `${exc.nomeVia} <span title="Área de Risco (Histórico PRF) identificada nas proximidades" style="color:#eab308; font-weight:bold;">⚠ Área de Risco</span>`;
+            return `${nomeBase} <span title="Área de Risco (Histórico PRF) identificada nas proximidades" style="color:#eab308; font-weight:bold;">⚠ Área de Risco</span>`;
         }
 
         function formatarLimiteVia(exc, comHtml) {
@@ -1546,7 +1587,8 @@ async function carregarHistoricoRiscoAutomaticamente() {
         function plotarMarcadorMapa(dados, ehExcesso, pct) {
             var cor = "var(--vel-normal)";
             if (ehExcesso) {
-                if (pct >= 50) cor = "var(--excesso-alto)";
+                if (dados.isChuva) cor = "var(--excesso-chuva)";
+                else if (pct >= 50) cor = "var(--excesso-alto)";
                 else if (pct >= 20) cor = "var(--excesso-medio)";
                 else cor = "var(--excesso-baixo)";
             }
@@ -1647,7 +1689,7 @@ async function carregarHistoricoRiscoAutomaticamente() {
 
             var htmlPopup = `
                 <div style="font-size:0.75rem; line-height:1.4; min-width:180px; color: #1e293b;">
-                    <b style="color:${cor};">${ehExcesso ? "⚠️ Limite Violado" : "✅ Velocidade Regular"}</b><br>
+                    <b style="color:${cor};">${ehExcesso ? (dados.isChuva ? "🌧️ EXCESSOS NA CHUVA" : "⚠️ Limite Violado") : "✅ Velocidade Regular"}</b><br>
                     <b>🏙️ Cidade:</b> ${dados.cidade}<br>
                     <b>🛣️ Via:</b> ${dados.nomeVia}<br>
                     <b>⏱️ Tempo:</b> ${dados.horario}<br>
@@ -2967,6 +3009,118 @@ function _gerarPdfTabelaComPlaca(placaInformada) {
             if (valido(destino)) partes.push("Destino: " + destino);
             if (valido(distancia)) partes.push("Distância percorrida: " + distancia);
             return partes.join("     |     ");
+        }
+    </script>
+
+    <script>
+        /* =====================================================================
+           CONFIRMAÇÃO DE "EXCESSOS NA CHUVA" (recurso independente)
+           Para cada ponto candidato (velocidade acima do valor configurado para
+           chuva, mas abaixo do limite normal da via/definido), consulta a mesma
+           API de clima histórico (Open-Meteo) e, se a precipitação for >= 1mm,
+           converte o ponto em um excesso de verdade, rotulado "EXCESSOS NA CHUVA".
+           ===================================================================== */
+        function processarCandidatosExcessoChuva() {
+            if (!candidatosExcessoChuva || candidatosExcessoChuva.length === 0) return;
+
+            printLog("Verificando candidatos a \"Excessos na Chuva\" junto à API de clima...");
+
+            var listaPromises = candidatosExcessoChuva.map(function(cand) {
+                var dataHoraAlvoIso = "";
+                var horaInteiraDoPonto = 12;
+                var urlClima = "";
+
+                try {
+                    var partesGerais = cand.horario.split(' ');
+                    var pData = partesGerais[0].split('/');
+                    var ano = pData[2], mes = pData[1].padStart(2, '0'), dia = pData[0].padStart(2, '0');
+                    var pHora = (partesGerais[1] || '00:00').split(':');
+                    var horaStr = pHora[0].padStart(2, '0');
+                    horaInteiraDoPonto = parseInt(horaStr);
+                    dataHoraAlvoIso = ano + '-' + mes + '-' + dia + 'T' + horaStr + ':00';
+                    urlClima = 'https://api.open-meteo.com/v1/forecast?latitude=' + cand.lat + '&longitude=' + cand.lon + '&start_date=' + ano + '-' + mes + '-' + dia + '&end_date=' + ano + '-' + mes + '-' + dia + '&hourly=weathercode,precipitation&timezone=auto';
+                } catch (err) {
+                    return Promise.resolve(null);
+                }
+
+                return fetch(urlClima)
+                    .then(function(res) { return res.json(); })
+                    .then(function(data) {
+                        var code = 0, precip = 0;
+                        if (data && data.hourly && data.hourly.time) {
+                            var idx = data.hourly.time.indexOf(dataHoraAlvoIso);
+                            if (idx !== -1) {
+                                code = data.hourly.weathercode[idx] !== undefined ? data.hourly.weathercode[idx] : 0;
+                                precip = data.hourly.precipitation[idx] !== undefined ? data.hourly.precipitation[idx] : 0;
+                            } else {
+                                var horaSegura = parseInt(dataHoraAlvoIso.split('T')[1].split(':')[0]) || 0;
+                                code = data.hourly.weathercode[horaSegura] !== undefined ? data.hourly.weathercode[horaSegura] : 0;
+                                precip = data.hourly.precipitation[horaSegura] !== undefined ? data.hourly.precipitation[horaSegura] : 0;
+                            }
+                        }
+                        cand.precipitacao = precip;
+                        cand.codigoClima = code;
+                        cand.horaInteira = horaInteiraDoPonto;
+                        return cand;
+                    })
+                    .catch(function(err) {
+                        console.error(err);
+                        cand.precipitacao = 0;
+                        return cand;
+                    });
+            });
+
+            Promise.all(listaPromises).then(function(candidatosResolvidos) {
+                var algumConfirmado = false;
+
+                candidatosResolvidos.forEach(function(cand) {
+                    if (!cand || !(cand.precipitacao >= 1.0)) return; // sem chuva significativa: fica como estava (marcador normal)
+                    algumConfirmado = true;
+
+                    // Remove o marcador provisório (estava marcado como velocidade regular)
+                    if (cand.markerProvisorio) {
+                        try { camadaNormais.removeLayer(cand.markerProvisorio); } catch (e) { /* ignora */ }
+                    }
+
+                    var isDayForcado = (cand.horaInteira >= 6 && cand.horaInteira < 18) ? 1 : 0;
+                    var infoObjeto = (typeof obterSimboloClimaOpenMeteo === 'function')
+                        ? obterSimboloClimaOpenMeteo(cand.codigoClima, isDayForcado)
+                        : { simbolo: "🌧️", texto: "Chuva" };
+                    var textoComPrecip = infoObjeto.texto + ' (' + cand.precipitacao + ' mm)';
+
+                    var pct = ((cand.velReg - cand.velMaxVia) / cand.velMaxVia) * 100;
+                    var uidMarker = Math.random().toString(36).substr(2, 9);
+                    var registro = {
+                        uid: uidMarker, lat: cand.lat, lon: cand.lon, velReg: cand.velReg,
+                        velMaxVia: cand.velMaxVia, semMaxspeed: false, pct: pct,
+                        horario: cand.horario, nomeVia: cand.nomeVia, cidade: cand.cidade,
+                        marker: null, clima: infoObjeto.simbolo, climaTexto: textoComPrecip,
+                        precipitacao: cand.precipitacao, isChuva: true
+                    };
+
+                    registro.marker = plotarMarcadorMapa(registro, true, pct);
+                    listaDeExcessosOcorridos.push(registro);
+                    if (pct >= 50) listaDeExcessosCriticos.push(registro);
+
+                    picosDeExcessoEstatistica = (parseInt(document.getElementById('stat-total-picos').innerText) || 0) + 1;
+                    document.getElementById('stat-total-picos').innerText = picosDeExcessoEstatistica;
+
+                    if (cand.idxHistorico !== undefined && historicoLinhaGrafico[cand.idxHistorico]) {
+                        historicoLinhaGrafico[cand.idxHistorico].excesso = true;
+                        historicoLinhaGrafico[cand.idxHistorico].limite = cand.velMaxVia;
+                    }
+                });
+
+                if (algumConfirmado) {
+                    document.getElementById('m-total-excessos').innerText = listaDeExcessosOcorridos.length;
+                    atualizarTabelaDOM();
+                    renderizarGraficoLinhaContinuo();
+                    gerarLegendaClimaDinamica();
+                    printLog("Excessos na Chuva confirmados e adicionados ao relatório.");
+                } else {
+                    printLog("Nenhum candidato a \"Excessos na Chuva\" teve chuva >= 1mm confirmada.");
+                }
+            });
         }
     </script>
 
