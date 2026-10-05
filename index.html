@@ -243,7 +243,7 @@
 <body>
 
     <header>
-        <h1>🚗 Auditor de Telemetria V32.4 <span style="font-size:0.55em; font-weight:normal; opacity:0.75;">atualizado em 02/10/2026</span></h1>
+        <h1>🚗 Auditor de Telemetria V32.6 <span style="font-size:0.55em; font-weight:normal; opacity:0.75;">atualizado em 02/10/2026</span></h1>
         <div style="font-size: 0.75rem; opacity: 0.85;">Mapeamento de excessos de velocidades acima do limite</div>
     </div>
     <button id="btn-sobre" style="
@@ -857,6 +857,7 @@ async function carregarHistoricoRiscoAutomaticamente() {
         var listaDeExcessosCriticos = []; 
         var historicoLinhaGrafico = []; 
         var candidatosExcessoChuva = []; // pontos abaixo do limite da via/definido, mas candidatos a excesso por causa da chuva
+        var chavesCandidatosChuvaVistos = {}; // evita repetir chamada à API para a mesma velocidade dentro do mesmo minuto
         
         var MAPA_DICIONARIO_CLIMA = {
     "☀️": "Céu Limpo (Dia)",
@@ -1219,6 +1220,7 @@ async function carregarHistoricoRiscoAutomaticamente() {
             listaDeExcessosEmAreaRisco = [];
             historicoLinhaGrafico = [];
             candidatosExcessoChuva = [];
+            chavesCandidatosChuvaVistos = {};
             indiceGeralAtual = -1;
             indiceCriticoAtual = -1;
             indiceRiscoAtual = -1;
@@ -1449,7 +1451,17 @@ async function carregarHistoricoRiscoAutomaticamente() {
                     } else if (candidatoChuva) {
                         // Marcador provisório (velocidade regular); some/vira excesso se a chuva for confirmada na API
                         var markerProvisorioChuva = plotarMarcadorMapa({ uid: Math.random().toString(36).substr(2, 9), lat, lon, velReg, velMaxVia: limiteConsiderado, horario: dataHoraFormatada, nomeVia: viaFinal, cidade: cidadeFinal }, false, 0);
-                        candidatosExcessoChuva.push({ lat, lon, velReg, horario: dataHoraFormatada, nomeVia: viaFinal, cidade: cidadeFinal, velMaxVia: velChuvaDefinida, idxHistorico: idxHistoricoAtual, markerProvisorio: markerProvisorioChuva });
+
+                        // Dedup: ignora posições com a MESMA velocidade dentro do MESMO minuto (não afeta as demais regras de velocidade).
+                        // Mantém só 1 candidato por combinação minuto+velocidade, reduzindo chamadas repetidas à API de clima.
+                        var partesHorarioChuva = dataHoraFormatada.split(' ');
+                        var minutoChaveChuva = (partesHorarioChuva[0] || '') + ' ' + (partesHorarioChuva[1] || '').substring(0, 5);
+                        var chaveDedupChuva = minutoChaveChuva + '|' + Math.round(velReg);
+
+                        if (!chavesCandidatosChuvaVistos[chaveDedupChuva]) {
+                            chavesCandidatosChuvaVistos[chaveDedupChuva] = true;
+                            candidatosExcessoChuva.push({ lat, lon, velReg, horario: dataHoraFormatada, nomeVia: viaFinal, cidade: cidadeFinal, velMaxVia: velChuvaDefinida, idxHistorico: idxHistoricoAtual, markerProvisorio: markerProvisorioChuva });
+                        }
                     } else {
                         plotarMarcadorMapa({ uid: Math.random().toString(36).substr(2, 9), lat, lon, velReg, velMaxVia: limiteConsiderado, horario: dataHoraFormatada, nomeVia: viaFinal, cidade: cidadeFinal }, false, 0);
                     }
@@ -2225,71 +2237,6 @@ exc.precipitacao = precip;
             });
     });
 }
-            fetch(urlClima)
-            .then(res => res.json())
-            .then(data => {
-                var code = 0;
-var precip = 0; // Guardará a quantidade em mm
-
-if (data && data.hourly && data.hourly.time) {
-    var idx = data.hourly.time.indexOf(dataHoraAlvoIso);
-    if (idx !== -1) {
-        code = data.hourly.weathercode[idx] !== undefined ? data.hourly.weathercode[idx] : 0;
-        precip = data.hourly.precipitation[idx] !== undefined ? data.hourly.precipitation[idx] : 0;
-    } else {
-        var horaSegura = parseInt(dataHoraAlvoIso.split('T')[1].split(':')[0]) || 0;
-        code = data.hourly.weathercode[horaSegura] !== undefined ? data.hourly.weathercode[horaSegura] : 0;
-        precip = data.hourly.precipitation[horaSegura] !== undefined ? data.hourly.precipitation[horaSegura] : 0;
-    }
-}                            // ============================================================
-                // REGRA DE OURO AUTOMÁTICA: Você define o fuso comercial
-                // Se o relógio marcar entre 06:00 e 17:59, força DIA (1). Caso contrário, NOITE (0).
-                // ============================================================
-                var isDayForçado = (horaInteiraDoExcesso >= 6 && horaInteiraDoExcesso < 18) ? 1 : 0;
-                
-                // Passa o código de chuva/nuvem da API, mas o Dia/Noite controlado por nós!
-                var infoObjeto = obterSimboloClimaOpenMeteo(code, isDayForçado);
-
-// Adiciona os milímetros ao texto se houver medição de precipitação
-var textoComPrecip = precip > 0 
-    ? `${infoObjeto.texto} (${precip} mm)` 
-    : `${infoObjeto.texto} (0 mm)`;
-
-exc.clima = infoObjeto.simbolo;
-exc.climaTexto = textoComPrecip;
-exc.precipitacao = precip; // Armazena como propriedade numérica caso precise filtrar depois
-                
-                // 1. Atualiza a tabela lateral
-                var tdAlvo = document.getElementById(`td-clima-${exc.uid}`);
-                if (tdAlvo) {
-                    tdAlvo.innerText = infoObjeto.simbolo;
-                    tdAlvo.title = infoObjeto.texto;
-                }
-                
-                // 2. Atualiza o Pop-up aberto no mapa Leaflet
-                if (exc.marker) {
-                    var popupAtual = exc.marker.getPopup();
-                    if (popupAtual) {
-                        var conteudoOriginal = popupAtual.getContent();
-                        var novoConteudo = conteudoOriginal.replace(
-                            /<b>Tempo Local:<\/b>.*?(?=<br>|<\/div>|$)/i, 
-                            `<b>Tempo Local:</b> ${infoObjeto.simbolo} (${infoObjeto.texto})`
-                        );
-                        popupAtual.setContent(novoConteudo);
-                    }
-                }
-                
-                atualizarVisualMarcadorClima(exc);
-                gerarLegendaClimaDinamica();
-            })
-            .catch((err) => {
-                console.error(err);
-                exc.clima = "❌";
-                exc.climaTexto = "Erro";
-                var tdAlvo = document.getElementById(`td-clima-${exc.uid}`);
-                if (tdAlvo) tdAlvo.innerText = "❌";
-            });
-    
 function obterSimboloClimaOpenMeteo(code, isDay) {
     // Se isDay for 0, significa que é noite no local pesquisado
     var ehNoite = (isDay === 0);
