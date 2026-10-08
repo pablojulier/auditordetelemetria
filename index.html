@@ -243,7 +243,7 @@
 <body>
 
     <header>
-        <h1>🚗 Auditor de Telemetria V32.7 <span style="font-size:0.55em; font-weight:normal; opacity:0.75;">atualizado em 06/10/2026</span></h1>
+        <h1>🚗 Auditor de Telemetria V32.9 <span style="font-size:0.55em; font-weight:normal; opacity:0.75;">atualizado em 08/10/2026</span></h1>
         <div style="font-size: 0.75rem; opacity: 0.85;">Mapeamento de excessos de velocidades acima do limite</div>
     </div>
     <button id="btn-sobre" style="
@@ -1012,23 +1012,102 @@ async function carregarHistoricoRiscoAutomaticamente() {
             });
         }
 
+        // Decodifica os bytes de um .csv como texto. Tenta UTF-8 primeiro; se os bytes não forem
+        // UTF-8 válido (comum nesses relatórios, exportados em ISO-8859-1/Windows-1252, com acentos
+        // como "HODÔMETRO"), cai para Windows-1252 automaticamente.
+        function decodificarTextoCsv(bytes) {
+            try {
+                return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+            } catch (e) {
+                return new TextDecoder('windows-1252').decode(bytes);
+            }
+        }
+
+        // Faz o parse de um texto CSV em uma matriz (array de arrays), igual ao formato que
+        // XLSX.utils.sheet_to_json({header:1}) produziria — mas sem NENHUMA interpretação de tipo:
+        // toda célula vira uma string exatamente como está escrita no arquivo. Isso evita que datas
+        // em texto (ex: "08/10/2026 00:01:00") sejam convertidas para número/data e percam a
+        // informação de qual parte é dia e qual é mês. Detecta automaticamente ';' ou ',' como
+        // delimitador e trata campos entre aspas (incluindo aspas duplicadas "" dentro do campo).
+        function parseCsvTexto(texto) {
+            var primeiraLinha = texto.split(/\r\n|\n|\r/, 1)[0] || '';
+            var delimitador = primeiraLinha.indexOf(';') !== -1 ? ';' : ',';
+
+            var linhas = [];
+            var linhaAtual = [];
+            var campoAtual = '';
+            var dentroDeAspas = false;
+
+            for (var i = 0; i < texto.length; i++) {
+                var ch = texto[i];
+                if (dentroDeAspas) {
+                    if (ch === '"') {
+                        if (texto[i + 1] === '"') { campoAtual += '"'; i++; }
+                        else dentroDeAspas = false;
+                    } else {
+                        campoAtual += ch;
+                    }
+                } else if (ch === '"') {
+                    dentroDeAspas = true;
+                } else if (ch === delimitador) {
+                    linhaAtual.push(campoAtual);
+                    campoAtual = '';
+                } else if (ch === '\r') {
+                    // ignora; a quebra de linha é tratada no '\n' (ou no \r isolado de sistemas antigos)
+                    if (texto[i + 1] !== '\n') {
+                        linhaAtual.push(campoAtual);
+                        linhas.push(linhaAtual);
+                        linhaAtual = [];
+                        campoAtual = '';
+                    }
+                } else if (ch === '\n') {
+                    linhaAtual.push(campoAtual);
+                    linhas.push(linhaAtual);
+                    linhaAtual = [];
+                    campoAtual = '';
+                } else {
+                    campoAtual += ch;
+                }
+            }
+            if (campoAtual !== '' || linhaAtual.length > 0) {
+                linhaAtual.push(campoAtual);
+                linhas.push(linhaAtual);
+            }
+
+            return linhas.filter(function(l) {
+                return l.some(function(v) { return v !== undefined && String(v).trim() !== ''; });
+            });
+        }
+
         function lerPlanilhaExcel(arquivos) {
             var arquivo = arquivos[0];
             if (!arquivo) return;
 
             document.getElementById('label-xlsx').innerText = "Arquivo: " + arquivo.name;
 
+            var ehArquivoCsv = /\.csv$/i.test(arquivo.name);
             var leitor = new FileReader();
             leitor.onload = function(e) {
                 try {
-                    var dadosUint = new Uint8Array(e.target.result);
-                    var workbook = XLSX.read(dadosUint, { type: 'array', cellDates: true });
-                    var primeiraAba = workbook.Sheets[workbook.SheetNames[0]];
+                    var linhasBrutas;
 
-                    // Lê a planilha como matriz bruta (array de arrays) para localizar a linha de
-                    // cabeçalho de verdade, pois alguns relatórios trazem título(s) e/ou linhas em
-                    // branco antes do cabeçalho (ex: "Relatório de Posições" na linha 1, cabeçalho na linha 4).
-                    var linhasBrutas = XLSX.utils.sheet_to_json(primeiraAba, { header: 1, defval: "" });
+                    if (ehArquivoCsv) {
+                        // .csv: parser próprio (ver parseCsvTexto) — nenhuma célula vira número/data
+                        // sozinha, elimina de vez a ambiguidade dd/mm x mm/dd em datas de texto.
+                        var textoCsv = decodificarTextoCsv(new Uint8Array(e.target.result));
+                        linhasBrutas = parseCsvTexto(textoCsv);
+                    } else {
+                        // .xlsx/.xls: fluxo original, sem nenhuma alteração.
+                        var dadosUint = new Uint8Array(e.target.result);
+                        var workbook = XLSX.read(dadosUint, { type: 'array', cellDates: true });
+                        var primeiraAba = workbook.Sheets[workbook.SheetNames[0]];
+
+                        // Lê a planilha como matriz bruta (array de arrays) para localizar a linha de
+                        // cabeçalho de verdade, pois alguns relatórios trazem título(s) e/ou linhas em
+                        // branco antes do cabeçalho (ex: "Relatório de Posições" na linha 1, cabeçalho na linha 4).
+                        linhasBrutas = XLSX.utils.sheet_to_json(primeiraAba, { header: 1, defval: "" });
+                    }
+
                     var idxCabecalho = detectarLinhaCabecalho(linhasBrutas);
 
                     var cabecalhosBrutos = linhasBrutas[idxCabecalho] || [];
@@ -1174,11 +1253,25 @@ async function carregarHistoricoRiscoAutomaticamente() {
         // Obtém o valor de Data/Hora de uma linha, combinando colunas separadas
         // (ex: RelatAnalitico com colunas "Data" e "Hora" distintas) quando aplicável.
         // Se não houver separação real, mantém o comportamento original (linha[colunasMapeadas.dataHora]).
+        // Converte um número "serial" de data do Excel (ex: 46183.48375) em um objeto Date de verdade.
+        // Necessário porque, para .csv, a leitura é feita sem cellDates (ver lerPlanilhaExcel) para evitar
+        // ambiguidade dd/mm vs mm/dd em datas de TEXTO — mas isso faz com que uma data exportada como
+        // número puro (sem ser texto) chegue aqui como número comum, em vez de already-parsed Date.
+        // Strings (dd/mm/aaaa ...) e datas já prontas (Date) passam direto, sem nenhuma alteração.
+        function normalizarPossivelSerialExcel(valor) {
+            if (typeof valor === 'number' && isFinite(valor) && valor > 0) {
+                var millis = Math.round((valor - 25569) * 86400 * 1000);
+                var dataConvertida = new Date(millis);
+                if (!isNaN(dataConvertida.getTime())) return dataConvertida;
+            }
+            return valor;
+        }
+
         function obterDataHoraBruta(linha) {
             var temColunasSeparadas = colunasMapeadas.dataCol && colunasMapeadas.horaCol && colunasMapeadas.dataCol !== colunasMapeadas.horaCol;
             if (temColunasSeparadas) {
-                var valData = linha[colunasMapeadas.dataCol];
-                var valHora = linha[colunasMapeadas.horaCol];
+                var valData = normalizarPossivelSerialExcel(linha[colunasMapeadas.dataCol]);
+                var valHora = normalizarPossivelSerialExcel(linha[colunasMapeadas.horaCol]);
 
                 var dataEhData = valData instanceof Date && !isNaN(valData.getTime());
                 var horaEhData = valHora instanceof Date && !isNaN(valHora.getTime());
@@ -1199,7 +1292,7 @@ async function carregarHistoricoRiscoAutomaticamente() {
                 }
             }
 
-            return linha[colunasMapeadas.dataHora];
+            return normalizarPossivelSerialExcel(linha[colunasMapeadas.dataHora]);
         }
 
         function executarCruzamentoAssincrono() {
